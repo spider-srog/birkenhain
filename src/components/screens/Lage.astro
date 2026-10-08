@@ -4,6 +4,7 @@ import Bildband from '../Bildband.astro';
 import DistanzListe from '../DistanzListe.astro';
 import Hero from '../Hero.astro';
 import Karte from '../Karte.astro';
+import VeloFussverkehr from '../VeloFussverkehr.astro';
 import { useTranslations } from '../../i18n/ui';
 import { hasCoordinates } from '../../lib/projekt';
 import type { Locale } from '../../i18n/routes';
@@ -36,6 +37,8 @@ const t = useTranslations(locale);
       </div>
     )
   }
+
+  <VeloFussverkehr locale={locale} />
 
   <Bildband src={aerial} alt={t('home.teaserLage')} size="sm" />
 </BaseLayout>
