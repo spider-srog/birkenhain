@@ -1,0 +1,259 @@
+---
+import Icon from './Icon.astro';
+import PlanFigur from './PlanFigur.astro';
+import { useTranslations } from '../i18n/ui';
+import type { Locale } from '../i18n/routes';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const t = useTranslations(locale);
+
+const cards = [
+  { icon: 'footprints', kicker: t('lage.v1Kicker'), title: t('lage.v1'), text: t('lage.v1Text') },
+  { icon: 'bike', kicker: t('lage.v2Kicker'), title: t('lage.v2'), text: t('lage.v2Text') },
+  { icon: 'caravan', kicker: t('lage.v3Kicker'), title: t('lage.v3'), text: t('lage.v3Text') },
+  { icon: 'zap', kicker: t('lage.v4Kicker'), title: t('lage.v4'), text: t('lage.v4Text') },
+];
+---
+
+<section class="velo section--m" aria-labelledby="velo-heading">
+  <div class="container">
+    <div class="titlerow">
+      <h2 id="velo-heading">{t('lage.veloTitle')}</h2>
+    </div>
+
+    <p class="lead velo__lead" data-reveal>{t('lage.veloLead')}</p>
+
+    <div class="velo__figurewrap" data-reveal>
+      <PlanFigur note={t('lage.veloCaption')}>
+        {/*
+          Schnittschema, kein Plan: Geometrie ist frei gesetzt, nicht aus dem
+          Gestaltungsplan uebernommen. Bewusst ohne Text im SVG — Beschriftungen
+          muessten zweisprachig sein und waeren auf dem Telefon unlesbar klein;
+          die Erklaerung traegt die Legende darunter.
+        */}
+        <svg
+          class="sch"
+          viewBox="0 0 900 322"
+          role="img"
+          aria-label={t('lage.veloAlt')}
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <defs>
+            {/* Alle Glyphen sitzen mit ihrer Standflaeche auf y = 0. */}
+            <g id="bh-velo" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="0" cy="-9" r="9"></circle>
+              <circle cx="30" cy="-9" r="9"></circle>
+              <path d="M0 -9 10 -25 23 -25 30 -9M10 -25 15 -9M6 -28 13 -28M21 -30 28 -30"></path>
+            </g>
+
+            <g id="bh-anhaenger" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M0 -22 8 -26"></path>
+              <rect x="8" y="-48" width="54" height="22"></rect>
+              <circle cx="30" cy="-9" r="9"></circle>
+            </g>
+
+            <g id="bh-person" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="0" cy="-41" r="6"></circle>
+              <path d="M0 -35V-18M-10 -29 10 -26M0 -18-9 0M0 -18 9 0"></path>
+            </g>
+
+            <g id="bh-baum" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M0 0V-40M0 -26-9 -34M0 -20 8 -28"></path>
+              <ellipse cx="0" cy="-68" rx="32" ry="26"></ellipse>
+            </g>
+          </defs>
+
+          {/* Bebauung links und rechts — Kontext, bewusst blass. */}
+          <g class="sch__ctx">
+            <rect x="30" y="34" width="130" height="150"></rect>
+            <rect x="740" y="16" width="130" height="168"></rect>
+            <g class="sch__less">
+              <path d="M30 72H160M30 110H160M30 148H160"></path>
+              <path d="M740 50H870M740 84H870M740 118H870M740 152H870"></path>
+            </g>
+          </g>
+
+          {/* Terrain: oberhalb autofrei, unterhalb das Untergeschoss. */}
+          <path class="sch__ground" d="M30 184H870"></path>
+          <path class="sch__hatch" d="M36 186l-8 10M46 186l-8 10M56 186l-8 10M850 186l-8 10M860 186l-8 10M870 186l-8 10"></path>
+
+          {/* Verkehrsfreies Zentrum: Baeume und Zufussgehende. */}
+          <g class="sch__obj">
+            <use href="#bh-baum" x="340" y="184"></use>
+            <use href="#bh-baum" transform="translate(556 184) scale(.8)"></use>
+            <use href="#bh-person" x="430" y="184"></use>
+            <use href="#bh-person" x="460" y="184"></use>
+            <use href="#bh-person" transform="translate(492 184) scale(.8)"></use>
+          </g>
+
+          {/* Gedeckte Veloabstellplaetze am Rand der Ueberbauung. */}
+          <g class="sch__obj">
+            <path class="sch__roof" d="M176 116H302M598 116H724"></path>
+            <path d="M184 116V184M294 116V184M606 116V184M716 116V184"></path>
+            <use href="#bh-velo" x="196" y="184"></use>
+            <use href="#bh-velo" x="248" y="184"></use>
+            <use href="#bh-velo" x="618" y="184"></use>
+            <use href="#bh-velo" x="670" y="184"></use>
+          </g>
+
+          {/* Untergeschoss. */}
+          <rect class="sch__room" x="58" y="206" width="784" height="96"></rect>
+          <path class="sch__div" d="M600 206V302"></path>
+
+          {/* Veloplaetze, Lastenvelos mit Anhaenger. */}
+          <g class="sch__obj">
+            <use href="#bh-velo" x="90" y="302"></use>
+            <use href="#bh-velo" x="142" y="302"></use>
+            <use class="sch__less" href="#bh-velo" x="194" y="302"></use>
+            <use href="#bh-velo" x="280" y="302"></use>
+            <use href="#bh-anhaenger" x="316" y="302"></use>
+            <g class="sch__less">
+              <use href="#bh-velo" x="430" y="302"></use>
+              <use href="#bh-anhaenger" x="466" y="302"></use>
+              <use href="#bh-velo" x="548" y="302"></use>
+            </g>
+          </g>
+
+          {/* Elektrovelos: abschliessbare Schraenke, Ladestation. */}
+          <g class="sch__obj">
+            <rect x="620" y="240" width="96" height="62"></rect>
+            <path d="M668 240V302M620 261H716M620 281H716"></path>
+            <g class="sch__less">
+              <circle cx="662" cy="250" r="2.5"></circle>
+              <circle cx="662" cy="271" r="2.5"></circle>
+              <circle cx="662" cy="291" r="2.5"></circle>
+              <circle cx="710" cy="250" r="2.5"></circle>
+              <circle cx="710" cy="271" r="2.5"></circle>
+              <circle cx="710" cy="291" r="2.5"></circle>
+            </g>
+            <use href="#bh-velo" x="752" y="302"></use>
+            <path d="M818 302V252"></path>
+            <rect x="800" y="224" width="36" height="28"></rect>
+            <path class="sch__less" d="M800 244C784 246 780 262 782 280"></path>
+          </g>
+
+          <path class="sch__bolt" d="M822 228l-9 11h5l-4 9 11-12h-6z"></path>
+        </svg>
+      </PlanFigur>
+    </div>
+
+    <div class="cards velo__cards" data-reveal data-stagger>
+      {
+        cards.map((card) => (
+          <article class="card">
+            <span class="velo__icon">
+              <Icon name={card.icon} />
+            </span>
+            <p class="card__eyebrow">{card.kicker}</p>
+            <h3 class="velo__title">{card.title}</h3>
+            <p>{card.text}</p>
+          </article>
+        ))
+      }
+    </div>
+  </div>
+</section>
+
+<style>
+  .velo__lead {
+    max-width: 58ch;
+    margin: 0;
+  }
+
+  .velo__figurewrap {
+    margin-top: clamp(1.75rem, 4vw, 3rem);
+  }
+
+  .velo__cards {
+    --card-min: 15rem;
+    margin-top: clamp(1.75rem, 4vw, 3rem);
+  }
+
+  /* Wie bei den Energiekarten: Icon in Akzentfarbe ueber der Kachelzeile. */
+  .velo__icon {
+    display: block;
+    margin-bottom: var(--space-2xs);
+    font-size: 1.375rem;
+    color: var(--c-accent);
+  }
+
+  .velo__title {
+    margin-top: 0;
+  }
+
+  /* --- Schnittschema -------------------------------------------------------- */
+
+  .sch {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  /* `non-scaling-stroke`, damit die Linien auf dem Telefon nicht mitschrumpfen:
+     das Schema wird dort auf rund 40 % skaliert, Haarlinien verschwaenden sonst. */
+  .sch :is(path, rect, circle, ellipse, use) {
+    vector-effect: non-scaling-stroke;
+  }
+
+  .sch__ctx {
+    fill: none;
+    stroke: #c9c3b8;
+    stroke-width: 1;
+  }
+
+  .sch__ground {
+    fill: none;
+    stroke: var(--c-accent);
+    stroke-width: 1.75;
+  }
+
+  .sch__hatch {
+    fill: none;
+    stroke: #b5afa4;
+    stroke-width: 1;
+    stroke-linecap: round;
+  }
+
+  .sch__room {
+    fill: var(--c-accent-tint);
+    stroke: #9b958b;
+    stroke-width: 1.25;
+  }
+
+  .sch__div {
+    fill: none;
+    stroke: #b5afa4;
+    stroke-width: 1;
+    stroke-dasharray: 5 6;
+  }
+
+  .sch__obj {
+    fill: none;
+    stroke: #54514d;
+    stroke-width: 1.35;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .sch__roof {
+    stroke-width: 2.25;
+  }
+
+  .sch__bolt {
+    fill: var(--c-accent);
+    stroke: none;
+  }
+
+  /* Auf schmalen Schirmen faellt das Beiwerk weg: bei rund 40 % Skalierung
+     laufen Schrankgriffe, Geschossdecken und die zweite Anhaengergruppe
+     ineinander. Die Aussage des Schemas bleibt ohne sie bestehen. */
+  @media (max-width: 44rem) {
+    .sch__less {
+      display: none;
+    }
+  }
+</style>
