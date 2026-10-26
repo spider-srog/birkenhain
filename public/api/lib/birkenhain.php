@@ -115,9 +115,22 @@ class BhConfigError extends RuntimeException
  * ab. `site_origin` bleibt leer, damit die Bestätigungslinks auf den
  * Host zeigen, der tatsächlich antwortet, und nicht auf die Produktion,
  * wenn das hier einmal woanders läuft.
+ *
+ * `list_password_hash` schützt den Abruf der Anmeldeliste. Im Code steht
+ * nur der Hash — ein bcrypt-Hash ist kein Passwort, er lässt sich nicht
+ * zurückrechnen. Das Passwort selbst kennt nur, wem es mitgeteilt wurde.
+ * Ein auf dem Server erzeugtes Geheimnis käme hier nicht in Frage: es
+ * läge in einer Datei, an die ohne Shell-Zugang niemand herankommt — und
+ * genau dieser fehlende Zugang ist der Grund, warum es die Abrufadresse
+ * überhaupt gibt. Ein eigenes Passwort setzt man über `config.php`:
+ *
+ *     'list_password_hash' => password_hash('…', PASSWORD_DEFAULT),
+ *
+ * Ein leerer Wert sperrt den Abruf vollständig.
  */
 const CONFIG_DEFAULTS = [
     'opt_in_secret' => '',
+    'list_password_hash' => '$2y$12$KQIMmWQVplsvwtem6HUmAOqRYKGXeY0/Fe2zb1Mg8wcEI/P3DIrZW',
     'mail_from' => 'Im Birkenhain <noreply@birkenhain.ch>',
     'mail_notify_to' => 'birkenhain@realnorth.ch',
     'mail_transport' => 'mail',
@@ -494,15 +507,16 @@ function bh_opt_in_mail(string $locale, string $name, string $link): array
                 "Hello {$name}",
                 '',
                 'You have joined the registration list for the Im Birkenhain residential',
-                'development in Rudolfstetten-Friedlisberg. Please confirm your email',
-                'address using the following link:',
+                'development in Rudolfstetten-Friedlisberg. Your registration is on the',
+                'list. Confirming your email address lets us know we can reach you:',
                 '',
                 $link,
                 '',
-                'The link is valid for seven days. Without confirmation your registration',
-                'is not processed further and is deleted automatically.',
+                'The link is valid for seven days. Without confirmation your entry stays',
+                'on the list, but we will not use the address.',
                 '',
-                'If you did not register, please ignore this message.',
+                'If you did not register, please ignore this message — and let us know',
+                'if you would like the entry removed.',
                 '',
                 'Kind regards',
                 'Im Birkenhain',
@@ -516,15 +530,17 @@ function bh_opt_in_mail(string $locale, string $name, string $link): array
             "Guten Tag {$name}",
             '',
             'Sie haben sich für die Anmeldeliste der Wohnüberbauung Im Birkenhain',
-            'in Rudolfstetten-Friedlisberg eingetragen. Bitte bestätigen Sie Ihre',
-            'E-Mail-Adresse über den folgenden Link:',
+            'in Rudolfstetten-Friedlisberg eingetragen. Ihre Anmeldung steht auf der',
+            'Liste. Mit dem folgenden Link bestätigen Sie Ihre E-Mail-Adresse — dann',
+            'wissen wir, dass wir Sie erreichen können:',
             '',
             $link,
             '',
-            'Der Link ist sieben Tage gültig. Ohne Bestätigung wird Ihre Anmeldung',
-            'nicht weiterverarbeitet und automatisch gelöscht.',
+            'Der Link ist sieben Tage gültig. Ohne Bestätigung bleibt Ihr Eintrag auf',
+            'der Liste, wir verwenden die Adresse dann aber nicht.',
             '',
-            'Haben Sie sich nicht angemeldet, ignorieren Sie diese Nachricht.',
+            'Haben Sie sich nicht angemeldet, ignorieren Sie diese Nachricht — oder',
+            'melden Sie sich, dann löschen wir den Eintrag.',
             '',
             'Freundliche Grüsse',
             'Im Birkenhain',
@@ -536,6 +552,7 @@ function bh_opt_in_mail(string $locale, string $name, string $link): array
 
 /** Spalten der Liste, in dieser Reihenfolge. */
 const LIST_COLUMNS = [
+    'Angemeldet am',
     'Bestätigt am',
     'Vorname',
     'Name',
@@ -553,70 +570,140 @@ const LIST_COLUMNS = [
     'Bemerkung',
 ];
 
-/**
- * Führt `birkenhain-data/anmeldungen.csv` — eine Zeile je bestätigter
- * Anmeldung, zum Anklicken im Dateimanager.
- *
- * Die Datenbank bleibt die verbindliche Ablage; diese Datei ist die
- * lesbare Sicht darauf. Sie wird nur ergänzt, nie überschrieben: geht die
- * SQLite-Datei einmal verloren, liegt die Liste trotzdem noch da.
- *
- * Semikolon statt Komma und ein BOM voran, damit Excel die Datei in der
- * Schweizer Einstellung ohne Importdialog richtig aufteilt und Umlaute
- * nicht zerlegt.
- *
- * Schlägt das Schreiben fehl, ist das kein Grund, die Bestätigung
- * scheitern zu lassen — die Anmeldung steht dann in der Datenbank.
- */
-function bh_append_list(array $record): bool
+/** Zeitpunkte in Schweizer Schreibweise und Ortszeit, zum Lesen. */
+function bh_zeit(string|int $wert): string
 {
-    $file = bh_config()['data_dir'] . '/anmeldungen.csv';
-    $neu = !is_file($file);
-
-    $handle = @fopen($file, 'a');
-    if ($handle === false) {
-        return false;
+    if ($wert === '' || $wert === 0) {
+        return '';
     }
 
     try {
-        if (!flock($handle, LOCK_EX)) {
-            return false;
-        }
+        $zeit = is_int($wert)
+            ? (new DateTimeImmutable('@' . $wert))
+            : new DateTimeImmutable($wert);
+        return $zeit->setTimezone(new DateTimeZone('Europe/Zurich'))->format('d.m.Y H:i');
+    } catch (Exception) {
+        return (string) $wert;
+    }
+}
 
-        // Zwischen is_file() und dem Lock kann ein paralleler Request die
-        // Datei angelegt haben; die Grösse entscheidet, nicht die Vorprüfung.
-        if ($neu && ftell($handle) === 0) {
-            fwrite($handle, "\u{FEFF}");
-            fputcsv($handle, LIST_COLUMNS, ';', '"', '\\');
+/**
+ * Alle Anmeldungen als Tabellenzeilen, älteste zuerst.
+ *
+ * Die Reihenfolge der Werte entspricht LIST_COLUMNS.
+ */
+function bh_list_rows(): array
+{
+    $stmt = bh_db()->query('SELECT payload, confirmed_at FROM signups ORDER BY rowid');
+    $rows = [];
+
+    foreach ($stmt as $zeile) {
+        $record = json_decode((string) $zeile['payload'], true);
+        if (!is_array($record)) {
+            continue;
         }
 
         $extras = (string) ($record['extras'] ?? '');
-        fputcsv($handle, [
-            $record['confirmedAt'] ?? gmdate('c'),
-            $record['firstName'] ?? '',
-            $record['lastName'] ?? '',
-            $record['email'] ?? '',
-            $record['phone'] ?? '',
-            $record['rooms'] ?? '',
-            $record['area'] ?? '',
-            $record['moveIn'] ?? '',
-            $record['parking'] ?? '',
+        $rows[] = [
+            bh_zeit((string) ($record['createdAt'] ?? '')),
+            bh_zeit((int) $zeile['confirmed_at']),
+            (string) ($record['firstName'] ?? ''),
+            (string) ($record['lastName'] ?? ''),
+            (string) ($record['email'] ?? ''),
+            (string) ($record['phone'] ?? ''),
+            (string) ($record['rooms'] ?? ''),
+            (string) ($record['area'] ?? ''),
+            (string) ($record['moveIn'] ?? ''),
+            (string) ($record['parking'] ?? ''),
             bh_has_extra($extras, 'garten') ? 'ja' : '',
             bh_has_extra($extras, 'attika') ? 'ja' : '',
             bh_has_extra($extras, 'bastelraum') ? 'ja' : '',
             bh_has_extra($extras, 'haustier') ? 'ja' : '',
-            $record['locale'] ?? '',
+            (string) ($record['locale'] ?? ''),
             str_replace(["\r\n", "\r", "\n"], ' ', (string) ($record['message'] ?? '')),
-        ], ';', '"', '\\');
-
-        flock($handle, LOCK_UN);
-        return true;
-    } finally {
-        fclose($handle);
+        ];
     }
+
+    return $rows;
 }
 
-/** Interne Benachrichtigung, erst nach der Bestätigung. */
+/**
+ * Die Liste als CSV.
+ *
+ * Semikolon statt Komma und ein BOM voran, damit Excel die Datei in der
+ * Schweizer Einstellung ohne Importdialog richtig aufteilt und Umlaute
+ * nicht zerlegt.
+ */
+function bh_list_csv(): string
+{
+    $handle = fopen('php://temp', 'r+');
+    fwrite($handle, "\u{FEFF}");
+    fputcsv($handle, LIST_COLUMNS, ';', '"', '\\');
+    foreach (bh_list_rows() as $row) {
+        fputcsv($handle, $row, ';', '"', '\\');
+    }
+    rewind($handle);
+    $csv = (string) stream_get_contents($handle);
+    fclose($handle);
+
+    return $csv;
+}
+
+/**
+ * Schreibt `birkenhain-data/anmeldungen.csv` neu — eine Zeile je Anmeldung,
+ * zum Anklicken im Dateimanager.
+ *
+ * Erzeugt, nicht fortgeschrieben: eine Anmeldung steht sofort drin und
+ * bekommt später ihr Bestätigungsdatum dazu. Eine nur angehängte Datei
+ * könnte das nicht nachtragen.
+ *
+ * Erst in eine Nebendatei, dann `rename()`: wer die Datei währenddessen
+ * herunterlädt, bekommt den alten oder den neuen Stand, nie einen halben.
+ *
+ * Schlägt das Schreiben fehl, ist das kein Grund, die Anmeldung scheitern
+ * zu lassen — sie steht dann in der Datenbank, und `liste.php` liest
+ * ohnehin von dort.
+ */
+function bh_write_list(): bool
+{
+    $file = bh_config()['data_dir'] . '/anmeldungen.csv';
+    $tmp = $file . '.' . bin2hex(random_bytes(4));
+
+    if (@file_put_contents($tmp, bh_list_csv()) === false) {
+        return false;
+    }
+    if (!@rename($tmp, $file)) {
+        @unlink($tmp);
+        return false;
+    }
+
+    return true;
+}
+
+// --- Abruf der Liste ------------------------------------------------------
+
+/**
+ * Stimmt das eingegebene Passwort?
+ *
+ * `password_verify` braucht von sich aus konstante Zeit. Ein leerer Hash
+ * in der Konfiguration sperrt den Abruf, statt ihn freizugeben.
+ *
+ * Bewusst ohne Sitzung und ohne Cookie: die Datenschutzerklärung sagt,
+ * dass diese Website keine Cookies setzt, und das soll auch für die
+ * Abrufseite gelten. Der Preis ist, dass das Passwort bei jedem Abruf
+ * erneut eingegeben wird — bei einer Seite, die man selten öffnet, ist
+ * das kein Verlust.
+ */
+function bh_list_password_ok(string $eingabe): bool
+{
+    $hash = bh_config()['list_password_hash'] ?? '';
+    if (!is_string($hash) || $hash === '' || $eingabe === '') {
+        return false;
+    }
+    return password_verify($eingabe, $hash);
+}
+
+/** Interne Benachrichtigung, sobald eine Anmeldung eingegangen ist. */
 function bh_notify_mail(array $record): array
 {
     $lines = [];
@@ -628,9 +715,9 @@ function bh_notify_mail(array $record): array
     }
 
     return [
-        'subject' => 'Neue bestätigte Anmeldung — Im Birkenhain',
+        'subject' => 'Neue Anmeldung — Im Birkenhain',
         'body' => implode("\n", array_merge(
-            ['Eine Anmeldung wurde per Double-Opt-In bestätigt.', ''],
+            ['Eine neue Anmeldung ist eingegangen und steht in der Liste.', ''],
             $lines,
         )),
     ];

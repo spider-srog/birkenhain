@@ -41,6 +41,7 @@ return [
     'mail_notify_to' => 'intern@example.test',
     'mail_transport' => 'log',
     'site_origin' => 'http://127.0.0.1:$PORT',
+    'list_password_hash' => password_hash('test-passwort', PASSWORD_DEFAULT),
 ];
 PHP
 
@@ -113,8 +114,13 @@ check "Einstellplatz gespeichert" "$(field pending parking)" "mit"
 # Reihenfolge der Mehrfachauswahl ist die des Formulars, nicht die des POST.
 check "weitere Wünsche gespeichert" "$(field pending extras)" "garten,haustier"
 
-# Die Liste entsteht erst mit der Bestaetigung — vorher steht dort nichts.
-check "Liste noch leer" "$(list_rows | wc -l | tr -d ' ')" "0"
+# Die Anmeldung steht sofort in der Liste und in `signups`, noch ohne
+# Bestaetigungsdatum. Vorher hing beides am Klick in der Mail.
+check "Anmeldung sofort in der Ablage" "$(rows signups)" "1"
+check "Liste hat sofort eine Zeile" "$(list_rows | wc -l | tr -d ' ')" "1"
+check "noch ohne Bestätigungsdatum" "$(list_cell 1 2)" ""
+check "Anmeldedatum steht drin" \
+  "$([ -n "$(list_cell 1 1)" ] && echo ja || echo nein)" "ja"
 
 LINK=$(grep -o "http://127.0.0.1:$PORT/api/bestaetigen.php?[^ ]*" "$DATA/mail.log" | tail -1)
 ID=$(printf '%s' "$LINK" | sed 's/.*id=\([^&]*\).*/\1/')
@@ -126,19 +132,44 @@ check "unbestätigte Anmeldung unberührt" "$(rows pending)" "1"
 
 check "echter Bestätigungslink" "$(target "$LINK")" \
   "http://127.0.0.1:$PORT/anmeldung/bestaetigt"
-check "Anmeldung ist bestätigt" "$(rows signups)" "1"
-check "offene Anmeldung eingelöst" "$(rows pending)" "0"
+check "Anmeldung bleibt eine" "$(rows signups)" "1"
+check "offene Bestätigung eingelöst" "$(rows pending)" "0"
 
-# Und dieselbe Anmeldung steht lesbar in der Liste.
-check "Liste bekommt eine Zeile" "$(list_rows | wc -l | tr -d ' ')" "1"
+# Die Zeile bleibt dieselbe und bekommt ihr Bestaetigungsdatum dazu.
+check "Liste bleibt bei einer Zeile" "$(list_rows | wc -l | tr -d ' ')" "1"
+check "Bestätigungsdatum nachgetragen" \
+  "$([ -n "$(list_cell 1 2)" ] && echo ja || echo nein)" "ja"
 check "Liste nennt die Spalten" \
   "$(head -1 "$DATA/anmeldungen.csv" | tr -d '\357\273\277\r\"')" \
-  "Bestätigt am;Vorname;Name;E-Mail;Telefon;Zimmer;Fläche ab (m²);Bezugstermin;Einstellplatz;Gartenwohnung;Attikawohnung;Bastelraum;Haustier;Sprache;Bemerkung"
-check "Liste führt die Adresse" "$(list_cell 1 4)" "anna@example.test"
-check "Liste führt den Einstellplatz" "$(list_cell 1 9)" "mit"
-check "Liste hakt die Gartenwohnung an" "$(list_cell 1 10)" "ja"
-check "Liste lässt die Attikawohnung leer" "$(list_cell 1 11)" ""
-check "Liste hakt das Haustier an" "$(list_cell 1 13)" "ja"
+  "Angemeldet am;Bestätigt am;Vorname;Name;E-Mail;Telefon;Zimmer;Fläche ab (m²);Bezugstermin;Einstellplatz;Gartenwohnung;Attikawohnung;Bastelraum;Haustier;Sprache;Bemerkung"
+check "Liste führt die Adresse" "$(list_cell 1 5)" "anna@example.test"
+check "Liste führt den Einstellplatz" "$(list_cell 1 10)" "mit"
+check "Liste hakt die Gartenwohnung an" "$(list_cell 1 11)" "ja"
+check "Liste lässt die Attikawohnung leer" "$(list_cell 1 12)" ""
+check "Liste hakt das Haustier an" "$(list_cell 1 14)" "ja"
+
+# --- Abrufseite ---------------------------------------------------------
+
+liste() { curl -s --noproxy '*' "$@" "http://127.0.0.1:$PORT/api/liste.php"; }
+
+check "Abruf ohne Passwort zeigt nur das Feld" \
+  "$(liste | grep -c 'anna@example.test' || true)" "0"
+check "Abruf ohne Passwort fragt nach dem Passwort" \
+  "$(liste | grep -c 'name="passwort"' || true)" "1"
+check "falsches Passwort gibt die Liste nicht her" \
+  "$(liste -d passwort=daneben | grep -c 'anna@example.test' || true)" "0"
+check "falsches Passwort sagt es" \
+  "$(liste -d passwort=daneben | grep -c 'stimmt nicht' || true)" "1"
+check "richtiges Passwort zeigt die Anmeldung" \
+  "$(liste -d passwort=test-passwort | grep -c 'anna@example.test' || true)" "1"
+check "Abrufseite bleibt aus Suchmaschinen" \
+  "$(curl -s --noproxy '*' -D- -o /dev/null -d passwort=test-passwort \
+      "http://127.0.0.1:$PORT/api/liste.php" | grep -ci 'x-robots-tag: noindex')" "1"
+check "CSV-Export trägt die Anmeldung" \
+  "$(liste -d passwort=test-passwort -d format=csv | tr -d '\357\273\277' \
+      | grep -c 'anna@example.test' || true)" "1"
+check "CSV-Export ohne Passwort gibt nichts her" \
+  "$(liste -d format=csv | grep -c 'anna@example.test' || true)" "0"
 
 check "Replay desselben Links" "$(target "$LINK")" \
   "http://127.0.0.1:$PORT/anmeldung/bestaetigung-fehlgeschlagen"

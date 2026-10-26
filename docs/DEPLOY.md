@@ -227,31 +227,53 @@ Apache sitzt und `.htaccess` damit ignoriert wird.
 
 ## Anmeldungen auslesen
 
-**Der kurze Weg: `birkenhain-data/anmeldungen.csv`.** Jede bestätigte
-Anmeldung bekommt dort eine Zeile — Semikolon als Trennzeichen und ein BOM
-voran, damit Excel die Datei per Doppelklick richtig aufteilt und die
-Umlaute stehen lässt. Die Spalten:
+**Der kurze Weg: `https://birkenhain.ch/api/liste.php`.** Passwort
+eingeben, Tabelle lesen, bei Bedarf als CSV herunterladen. Die Seite ist
+nirgends verlinkt, für Suchmaschinen gesperrt (`X-Robots-Tag: noindex`)
+und setzt kein Cookie — das Passwort wird bei jedem Abruf erneut
+eingegeben.
+
+Das Passwort kennt die Bauherrschaft; im Repository steht nur sein
+bcrypt-Hash (`CONFIG_DEFAULTS['list_password_hash']`), aus dem es sich
+nicht zurückrechnen lässt. Ein eigenes setzen:
+
+```php
+// in birkenhain-data/config.php
+'list_password_hash' => '<Ausgabe von password_hash()>',
+```
+
+Den Hash erzeugt `php -r "echo password_hash('…', PASSWORD_DEFAULT);"`.
+Ein leerer Wert sperrt den Abruf vollständig.
+
+Falsche Versuche zählen wie Anmeldeversuche: nach zehn pro Stunde und
+IP-Adresse antwortet die Seite mit 429.
+
+### Dieselbe Liste als Datei
+
+`birkenhain-data/anmeldungen.csv` trägt denselben Inhalt — Semikolon als
+Trennzeichen und ein BOM voran, damit Excel die Datei per Doppelklick
+richtig aufteilt und die Umlaute stehen lässt. Die Spalten:
 
 ```
-Bestätigt am; Vorname; Name; E-Mail; Telefon; Zimmer; Fläche ab (m²);
-Bezugstermin; Einstellplatz; Gartenwohnung; Attikawohnung; Bastelraum;
-Haustier; Sprache; Bemerkung
+Angemeldet am; Bestätigt am; Vorname; Name; E-Mail; Telefon; Zimmer;
+Fläche ab (m²); Bezugstermin; Einstellplatz; Gartenwohnung;
+Attikawohnung; Bastelraum; Haustier; Sprache; Bemerkung
 ```
 
-Die Datei wird nur ergänzt, nie überschrieben, und entsteht erst mit der
-ersten Bestätigung. Sie ist die lesbare Sicht, nicht die Ablage: verbindlich
-bleibt die Datenbank. Lässt sie sich nicht schreiben, steht die Anmeldung
-trotzdem in der Datenbank und im Protokoll die Zeile `[birkenhain] Liste
-nicht beschreibbar`.
+Eine leere Spalte «Bestätigt am» heisst: die Anmeldung steht, die
+E-Mail-Adresse wurde aber nicht über den Link bestätigt. Die Anmeldung
+selbst hängt nicht daran — sie wird mit dem Absenden gespeichert.
+
+Die Datei wird bei jeder Anmeldung und jeder Bestätigung neu erzeugt, aus
+der Datenbank. Verbindlich bleibt die Datenbank; lässt sich die Datei
+nicht schreiben, steht die Anmeldung trotzdem, und im Protokoll die Zeile
+`[birkenhain] Liste nicht schreibbar`.
 
 Herunterladen über den Dateimanager von Plesk oder per `scp`:
 
 ```bash
 scp <user>@birkenhain.ch:birkenhain-data/anmeldungen.csv .
 ```
-
-Einen Download über die Webseite gibt es bewusst nicht — die Liste liegt
-ausserhalb des Webroots und ist damit für keinen Browser erreichbar.
 
 ### Aus der Datenbank
 

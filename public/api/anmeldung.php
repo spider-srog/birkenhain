@@ -50,33 +50,58 @@ try {
         bh_respond($locale, 'rateLimit', 429, ['error' => 'rate-limit']);
     }
 
-    // Bereits bestätigte Adressen nicht erneut anschreiben, aber auch nicht
-    // verraten, dass sie bekannt sind.
-    $stmt = bh_db()->prepare('SELECT 1 FROM signups WHERE email_hash = ?');
+    $db = bh_db();
+
+    // Bereits bestätigte Adressen bleiben, wie sie sind — aber die Antwort
+    // verrät nicht, dass sie bekannt sind.
+    $stmt = $db->prepare('SELECT confirmed_at FROM signups WHERE email_hash = ?');
     $stmt->execute([$emailHash]);
-    if ($stmt->fetchColumn() !== false) {
+    $bestehend = $stmt->fetchColumn();
+    if ($bestehend !== false && (int) $bestehend > 0) {
         bh_respond($locale, 'sent', 200, ['ok' => true]);
     }
 
     $id = bin2hex(random_bytes(16));
     $record = $value + ['createdAt' => gmdate('c')];
+    $json = json_encode($record, JSON_UNESCAPED_UNICODE);
 
-    bh_db()->prepare('INSERT INTO pending (id, email_hash, payload, created_at) VALUES (?, ?, ?, ?)')
-        ->execute([
-            $id,
-            $emailHash,
-            json_encode($record, JSON_UNESCAPED_UNICODE),
-            time(),
-        ]);
+    $db->beginTransaction();
+    // Die Anmeldung steht sofort in der Liste, noch unbestätigt. Vorher
+    // hing der Eintrag am Klick in der Mail — kam die nicht an, kam die
+    // Anmeldung nie an.
+    // Upsert statt INSERT OR REPLACE: die Zeile behaelt ihre rowid und
+    // damit ihren Platz in der Liste. Eine schon bestaetigte Adresse kommt
+    // hier gar nicht erst an, ihr Datum kann also nicht verloren gehen.
+    $db->prepare('INSERT INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, 0)
+        ON CONFLICT(email_hash) DO UPDATE SET payload = excluded.payload')
+        ->execute([$emailHash, $json]);
+    // Der Bestätigungslink braucht weiterhin seine eigene Zeile: er trägt
+    // eine Einmal-ID und nicht die Adresse.
+    $db->prepare('INSERT INTO pending (id, email_hash, payload, created_at) VALUES (?, ?, ?, ?)')
+        ->execute([$id, $emailHash, $json, time()]);
+    $db->commit();
 
+    if (!bh_write_list()) {
+        bh_log('Liste nicht schreibbar, Anmeldung nur in der Datenbank: ' . $emailHash);
+    }
+
+    // Die Bestätigungsmail ist ab hier eine Höflichkeit, keine Bedingung.
+    // Kommt sie nicht durch, steht die Anmeldung trotzdem; die Zeile in der
+    // Liste bleibt dann ohne Bestätigungsdatum.
     $link = bh_origin() . '/api/bestaetigen.php?id=' . urlencode($id) . '&sig=' . urlencode(bh_sign($id));
     $mail = bh_opt_in_mail($locale, $value['firstName'], $link);
-
     if (!bh_mail($value['email'], $mail['subject'], $mail['body'])) {
-        // Halb angelegte Anmeldung nicht liegen lassen.
-        bh_db()->prepare('DELETE FROM pending WHERE id = ?')->execute([$id]);
         bh_log('Mailversand fehlgeschlagen für ' . $emailHash);
-        bh_respond($locale, 'error', 502, ['error' => 'mail-failed']);
+    }
+
+    // Interne Meldung jetzt beim Eingang statt erst bei der Bestätigung —
+    // sonst bliebe eine unbestätigte Anmeldung unbemerkt.
+    $notifyTo = bh_config()['mail_notify_to'] ?? '';
+    if (is_string($notifyTo) && $notifyTo !== '') {
+        $meldung = bh_notify_mail($record);
+        if (!bh_mail($notifyTo, $meldung['subject'], $meldung['body'])) {
+            bh_log('Benachrichtigung fehlgeschlagen für ' . $emailHash);
+        }
     }
 } catch (BhConfigError $error) {
     // Eigene Antwort, damit von aussen lesbar ist, dass es am Server liegt

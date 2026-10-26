@@ -47,34 +47,26 @@ try {
     $locale = ($record['locale'] ?? 'de') === 'en' ? 'en' : 'de';
     $emailHash = bh_hash_email((string) $record['email']);
 
-    $record += ['confirmedAt' => gmdate('c')];
-
     $db = bh_db();
     $db->beginTransaction();
-    $db->prepare('INSERT OR REPLACE INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, ?)')
+    // Die Anmeldung steht schon seit dem Absenden. Bestätigt wird hier nur
+    // noch die Adresse — der Eintrag bekommt sein Datum, der Rest bleibt.
+    $db->prepare('INSERT INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, ?)
+        ON CONFLICT(email_hash) DO UPDATE SET confirmed_at = excluded.confirmed_at')
         ->execute([
             $emailHash,
             json_encode($record, JSON_UNESCAPED_UNICODE),
             time(),
         ]);
-    // Einmal-Link: nach dem Einlösen ist die offene Anmeldung weg.
+    // Einmal-Link: nach dem Einlösen ist die offene Bestätigung weg.
     $db->prepare('DELETE FROM pending WHERE id = ?')->execute([$id]);
     $db->commit();
 
     // Erst nach dem Commit: die Liste soll nur zeigen, was wirklich steht.
-    if (!bh_append_list($record)) {
-        // Die Anmeldung ist in der Datenbank — die lesbare Liste hinkt dann
+    if (!bh_write_list()) {
+        // Die Anmeldung ist in der Datenbank — die lesbare Datei hinkt dann
         // nach, mehr nicht. Kein Grund, die Bestätigung scheitern zu lassen.
-        bh_log('Liste nicht beschreibbar, Anmeldung nur in der Datenbank: ' . $emailHash);
-    }
-
-    $notifyTo = bh_config()['mail_notify_to'] ?? '';
-    if (is_string($notifyTo) && $notifyTo !== '') {
-        $mail = bh_notify_mail($record);
-        if (!bh_mail($notifyTo, $mail['subject'], $mail['body'])) {
-            // Die Anmeldung steht — nur die interne Meldung kam nicht durch.
-            bh_log('Benachrichtigung fehlgeschlagen für ' . $emailHash);
-        }
+        bh_log('Liste nicht schreibbar, Bestätigung nur in der Datenbank: ' . $emailHash);
     }
 } catch (Throwable $error) {
     bh_log('Bestätigung fehlgeschlagen: ' . $error->getMessage());
