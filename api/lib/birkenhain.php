@@ -23,7 +23,6 @@ if (!defined('BIRKENHAIN_ENTRY')) {
     exit;
 }
 
-const PENDING_TTL = 60 * 60 * 24 * 7;   // Sieben Tage bis der Link verfällt.
 const RATE_WINDOW = 3600;
 // Pro IP grosszuegiger: mehrere Interessenten koennen hinter demselben NAT
 // sitzen. Die eigentliche Bremse ist das Limit pro Adresse.
@@ -60,15 +59,11 @@ const EXTRAS = ['garten', 'attika', 'bastelraum', 'haustier'];
 const PATHS = [
     'de' => [
         'sent' => '/anmeldung/gesendet',
-        'confirmed' => '/anmeldung/bestaetigt',
-        'confirmFailed' => '/anmeldung/bestaetigung-fehlgeschlagen',
         'error' => '/anmeldung/fehler',
         'rateLimit' => '/anmeldung/zu-viele-versuche',
     ],
     'en' => [
         'sent' => '/en/register/sent',
-        'confirmed' => '/en/register/confirmed',
-        'confirmFailed' => '/en/register/confirmation-failed',
         'error' => '/en/register/error',
         'rateLimit' => '/en/register/too-many-attempts',
     ],
@@ -115,13 +110,29 @@ class BhConfigError extends RuntimeException
  * ab. `site_origin` bleibt leer, damit die Bestätigungslinks auf den
  * Host zeigen, der tatsächlich antwortet, und nicht auf die Produktion,
  * wenn das hier einmal woanders läuft.
+ *
+ * `list_password_hash` schützt den Abruf der Anmeldeliste. Im Code steht
+ * nur der Hash — ein bcrypt-Hash ist kein Passwort, er lässt sich nicht
+ * zurückrechnen. Das Passwort selbst kennt nur, wem es mitgeteilt wurde.
+ * Ein auf dem Server erzeugtes Geheimnis käme hier nicht in Frage: es
+ * läge in einer Datei, an die ohne Shell-Zugang niemand herankommt — und
+ * genau dieser fehlende Zugang ist der Grund, warum es die Abrufadresse
+ * überhaupt gibt. Ein eigenes Passwort setzt man über `config.php`:
+ *
+ *     'list_password_hash' => password_hash('…', PASSWORD_DEFAULT),
+ *
+ * Ein leerer Wert sperrt den Abruf vollständig.
  */
 const CONFIG_DEFAULTS = [
     'opt_in_secret' => '',
+    'list_password_hash' => '$2y$12$KQIMmWQVplsvwtem6HUmAOqRYKGXeY0/Fe2zb1Mg8wcEI/P3DIrZW',
     'mail_from' => 'Im Birkenhain <noreply@birkenhain.ch>',
     'mail_notify_to' => 'birkenhain@realnorth.ch',
     'mail_transport' => 'mail',
     'site_origin' => '',
+    // DNS-Abfrage in der Spamabwehr. Nur zum Abschalten dort, wo kein
+    // DNS erreichbar ist — etwa in einem abgeschotteten Test.
+    'spam_dns' => true,
 ];
 
 /**
@@ -244,16 +255,23 @@ function bh_db(): PDO
     $db->exec('PRAGMA journal_mode = WAL');
     $db->exec('PRAGMA busy_timeout = 5000');
 
-    $db->exec('CREATE TABLE IF NOT EXISTS pending (
-        id TEXT PRIMARY KEY,
-        email_hash TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-    )');
+    // Eine alte Tabelle `pending` aus der Zeit des Double-Opt-In kann in
+    // bestehenden Datenbanken noch liegen. Sie wird nicht mehr angelegt
+    // und nicht mehr gelesen; weggeräumt wird sie von Hand, nicht von
+    // einem Deploy.
     $db->exec('CREATE TABLE IF NOT EXISTS signups (
         email_hash TEXT PRIMARY KEY,
         payload TEXT NOT NULL,
         confirmed_at INTEGER NOT NULL
+    )');
+    // Aussortierte Anmeldungen. Sie landen hier statt im Nichts, damit
+    // ein Fehlgriff der Spamabwehr sichtbar und nachholbar bleibt.
+    $db->exec('CREATE TABLE IF NOT EXISTS spam (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        payload TEXT NOT NULL,
+        punkte INTEGER NOT NULL,
+        gruende TEXT NOT NULL,
+        created_at INTEGER NOT NULL
     )');
     $db->exec('CREATE TABLE IF NOT EXISTS rate_limit (
         bucket TEXT NOT NULL,
@@ -269,8 +287,8 @@ function bh_db(): PDO
 function bh_gc(): void
 {
     $db = bh_db();
-    $db->prepare('DELETE FROM pending WHERE created_at < ?')
-        ->execute([time() - PENDING_TTL]);
+    $db->prepare('DELETE FROM spam WHERE created_at < ?')
+        ->execute([time() - SPAM_TTL]);
     $db->prepare('DELETE FROM rate_limit WHERE window_start < ?')
         ->execute([intdiv(time(), RATE_WINDOW) - 1]);
 }
@@ -391,10 +409,140 @@ function bh_has_extra(string $extras, string $key): bool
     return in_array($key, explode(',', $extras), true);
 }
 
-/** Honeypot: das Feld ist für Menschen unsichtbar und muss leer bleiben. */
-function bh_is_bot(array $post): bool
+// --- Spamabwehr -----------------------------------------------------------
+
+/**
+ * Ab diesem Punktestand gilt eine Anmeldung als Spam.
+ *
+ * Kein einzelnes Merkmal entscheidet ausser dem Honigtopf — echte
+ * Menschen schreiben manchmal eine Ziffer in den Namen oder einen Link in
+ * die Bemerkung. Erst mehrere Merkmale zusammen reichen.
+ */
+const SPAM_SCHWELLE = 6;
+
+/** Darunter war kein Mensch am Werk. Nur messbar, wenn JavaScript läuft. */
+const SPAM_MIN_MS = 2500;
+
+/** So lange bleibt eine aussortierte Anmeldung nachholbar. */
+const SPAM_TTL = 60 * 60 * 24 * 90;
+
+/**
+ * Domain für die Kontrollabfrage: antwortet das DNS darauf nicht, ist
+ * im Netz etwas anderes kaputt, und eine Fehlanzeige bei der Domain der
+ * Anmeldung sagt nichts.
+ */
+const DNS_KONTROLLE = 'birkenhain.ch';
+
+/**
+ * Bewertet eine Anmeldung.
+ *
+ * Bewusst ohne Captcha und ohne fremden Dienst: ein reCAPTCHA würde die
+ * IP-Adresse jeder Besucherin an Google senden, und die
+ * Datenschutzerklärung sagt zu Recht, dass das hier nicht passiert.
+ * Stattdessen mehrere billige Merkmale, die zusammen ein Bild ergeben.
+ *
+ * Gibt Punkte, Gründe und das Urteil zurück. Die Gründe werden mit der
+ * aussortierten Anmeldung abgelegt, damit auf der Abrufseite nachlesbar
+ * ist, warum sie aussortiert wurde.
+ */
+function bh_spam(array $post, array $value): array
 {
-    return trim((string) ($post['website'] ?? '')) !== '';
+    $punkte = 0;
+    $gruende = [];
+    $merke = static function (string $grund, int $gewicht) use (&$punkte, &$gruende): void {
+        $punkte += $gewicht;
+        $gruende[] = $grund;
+    };
+
+    // Honigtopf: für Menschen unsichtbar, muss leer bleiben. Allein
+    // entscheidend — hier gibt es keine unschuldige Erklärung.
+    if (trim((string) ($post['website'] ?? '')) !== '') {
+        $merke('Honigtopf gefüllt', 10);
+    }
+
+    // Tempo. Das Feld setzt das Skript beim Absenden; ohne JavaScript
+    // bleibt es leer und zählt nicht.
+    $ms = (string) ($post['gestartet'] ?? '');
+    if (ctype_digit($ms) && (int) $ms > 0 && (int) $ms < SPAM_MIN_MS) {
+        $merke('in ' . number_format((int) $ms / 1000, 1, ',', '') . ' Sekunden ausgefüllt', 5);
+    }
+
+    // Herkunft. Fehlt der Referer, sagt das nichts — viele Browser
+    // senden keinen. Steht aber eine fremde Seite drin, wurde das
+    // Formular von woanders abgeschickt.
+    $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+    if ($referer !== '') {
+        $fremd = parse_url($referer, PHP_URL_HOST);
+        $eigen = parse_url(bh_origin(), PHP_URL_HOST);
+        if (is_string($fremd) && is_string($eigen) && strcasecmp($fremd, $eigen) !== 0) {
+            $merke('von einer fremden Seite abgeschickt', 5);
+        }
+    }
+
+    // Links, wo keine hingehören.
+    foreach (['firstName' => 'Vorname', 'lastName' => 'Name', 'phone' => 'Telefon'] as $feld => $titel) {
+        if (preg_match('~https?://|www\.|\[url~i', (string) $value[$feld]) === 1) {
+            $merke('Link im Feld ' . $titel, 7);
+        }
+    }
+
+    $links = preg_match_all('~https?://~i', (string) $value['message']);
+    if ($links >= 2) {
+        $merke($links . ' Links in der Bemerkung', 4);
+    }
+    if (preg_match('~\[/?(url|link|b|img)\]~i', (string) $value['message']) === 1) {
+        $merke('BBCode in der Bemerkung', 6);
+    }
+
+    // Ziffern im Namen sind selten, aber nicht unmöglich — darum leicht.
+    if (preg_match('~\d~', $value['firstName'] . $value['lastName']) === 1) {
+        $merke('Ziffern im Namen', 2);
+    }
+
+    if ((bh_config()['spam_dns'] ?? true) && !bh_domain_erreichbar((string) $value['email'])) {
+        $merke('E-Mail-Domain nicht erreichbar', 6);
+    }
+
+    return [
+        'punkte' => $punkte,
+        'gruende' => $gruende,
+        'spam' => $punkte >= SPAM_SCHWELLE,
+    ];
+}
+
+/**
+ * Nimmt die Domain der Adresse überhaupt Mail an?
+ *
+ * Das ersetzt, was vorher die Bestätigungsmail leistete: eine erfundene
+ * Domain fällt auf, ohne dass jemand auf einen Link klicken muss.
+ */
+function bh_domain_erreichbar(string $email): bool
+{
+    static $dnsLaeuft = null;
+
+    $domain = substr(strrchr($email, '@') ?: '', 1);
+    if ($domain === '') {
+        return false;
+    }
+
+    $dnsLaeuft ??= checkdnsrr(DNS_KONTROLLE, 'A') || checkdnsrr(DNS_KONTROLLE, 'MX');
+    if (!$dnsLaeuft) {
+        return true;
+    }
+
+    return checkdnsrr($domain, 'MX') || checkdnsrr($domain, 'A');
+}
+
+/** Legt eine aussortierte Anmeldung ab, damit sie nachholbar bleibt. */
+function bh_spam_ablegen(array $record, array $urteil): void
+{
+    bh_db()->prepare('INSERT INTO spam (payload, punkte, gruende, created_at) VALUES (?, ?, ?, ?)')
+        ->execute([
+            json_encode($record, JSON_UNESCAPED_UNICODE),
+            $urteil['punkte'],
+            implode(', ', $urteil['gruende']),
+            time(),
+        ]);
 }
 
 // --- Signatur -------------------------------------------------------------
@@ -405,11 +553,6 @@ function bh_sign(string $value): string
 }
 
 /** hash_equals vergleicht in konstanter Zeit. */
-function bh_verify(string $value, string $signature): bool
-{
-    return hash_equals(bh_sign($value), $signature);
-}
-
 /** E-Mail-Adressen werden nur als Hash indexiert, nicht im Klartext. */
 function bh_hash_email(string $email): string
 {
@@ -485,58 +628,11 @@ function bh_mail(string $to, string $subject, string $body): bool
     return mail($to, $encoded, $body, $headers);
 }
 
-function bh_opt_in_mail(string $locale, string $name, string $link): array
-{
-    if ($locale === 'en') {
-        return [
-            'subject' => 'Please confirm your registration — Im Birkenhain',
-            'body' => implode("\n", [
-                "Hello {$name}",
-                '',
-                'You have joined the registration list for the Im Birkenhain residential',
-                'development in Rudolfstetten-Friedlisberg. Please confirm your email',
-                'address using the following link:',
-                '',
-                $link,
-                '',
-                'The link is valid for seven days. Without confirmation your registration',
-                'is not processed further and is deleted automatically.',
-                '',
-                'If you did not register, please ignore this message.',
-                '',
-                'Kind regards',
-                'Im Birkenhain',
-            ]),
-        ];
-    }
-
-    return [
-        'subject' => 'Bitte bestätigen Sie Ihre Anmeldung — Im Birkenhain',
-        'body' => implode("\n", [
-            "Guten Tag {$name}",
-            '',
-            'Sie haben sich für die Anmeldeliste der Wohnüberbauung Im Birkenhain',
-            'in Rudolfstetten-Friedlisberg eingetragen. Bitte bestätigen Sie Ihre',
-            'E-Mail-Adresse über den folgenden Link:',
-            '',
-            $link,
-            '',
-            'Der Link ist sieben Tage gültig. Ohne Bestätigung wird Ihre Anmeldung',
-            'nicht weiterverarbeitet und automatisch gelöscht.',
-            '',
-            'Haben Sie sich nicht angemeldet, ignorieren Sie diese Nachricht.',
-            '',
-            'Freundliche Grüsse',
-            'Im Birkenhain',
-        ]),
-    ];
-}
-
 // --- Liste ----------------------------------------------------------------
 
 /** Spalten der Liste, in dieser Reihenfolge. */
 const LIST_COLUMNS = [
-    'Bestätigt am',
+    'Angemeldet am',
     'Vorname',
     'Name',
     'E-Mail',
@@ -553,70 +649,168 @@ const LIST_COLUMNS = [
     'Bemerkung',
 ];
 
-/**
- * Führt `birkenhain-data/anmeldungen.csv` — eine Zeile je bestätigter
- * Anmeldung, zum Anklicken im Dateimanager.
- *
- * Die Datenbank bleibt die verbindliche Ablage; diese Datei ist die
- * lesbare Sicht darauf. Sie wird nur ergänzt, nie überschrieben: geht die
- * SQLite-Datei einmal verloren, liegt die Liste trotzdem noch da.
- *
- * Semikolon statt Komma und ein BOM voran, damit Excel die Datei in der
- * Schweizer Einstellung ohne Importdialog richtig aufteilt und Umlaute
- * nicht zerlegt.
- *
- * Schlägt das Schreiben fehl, ist das kein Grund, die Bestätigung
- * scheitern zu lassen — die Anmeldung steht dann in der Datenbank.
- */
-function bh_append_list(array $record): bool
+/** Zeitpunkte in Schweizer Schreibweise und Ortszeit, zum Lesen. */
+function bh_zeit(string|int $wert): string
 {
-    $file = bh_config()['data_dir'] . '/anmeldungen.csv';
-    $neu = !is_file($file);
-
-    $handle = @fopen($file, 'a');
-    if ($handle === false) {
-        return false;
+    if ($wert === '' || $wert === 0) {
+        return '';
     }
 
     try {
-        if (!flock($handle, LOCK_EX)) {
-            return false;
-        }
+        $zeit = is_int($wert)
+            ? (new DateTimeImmutable('@' . $wert))
+            : new DateTimeImmutable($wert);
+        return $zeit->setTimezone(new DateTimeZone('Europe/Zurich'))->format('d.m.Y H:i');
+    } catch (Exception) {
+        return (string) $wert;
+    }
+}
 
-        // Zwischen is_file() und dem Lock kann ein paralleler Request die
-        // Datei angelegt haben; die Grösse entscheidet, nicht die Vorprüfung.
-        if ($neu && ftell($handle) === 0) {
-            fwrite($handle, "\u{FEFF}");
-            fputcsv($handle, LIST_COLUMNS, ';', '"', '\\');
+/**
+ * Alle Anmeldungen als Tabellenzeilen, älteste zuerst.
+ *
+ * Die Reihenfolge der Werte entspricht LIST_COLUMNS.
+ */
+function bh_list_rows(): array
+{
+    $stmt = bh_db()->query('SELECT payload FROM signups ORDER BY rowid');
+    $rows = [];
+
+    foreach ($stmt as $zeile) {
+        $record = json_decode((string) $zeile['payload'], true);
+        if (!is_array($record)) {
+            continue;
         }
 
         $extras = (string) ($record['extras'] ?? '');
-        fputcsv($handle, [
-            $record['confirmedAt'] ?? gmdate('c'),
-            $record['firstName'] ?? '',
-            $record['lastName'] ?? '',
-            $record['email'] ?? '',
-            $record['phone'] ?? '',
-            $record['rooms'] ?? '',
-            $record['area'] ?? '',
-            $record['moveIn'] ?? '',
-            $record['parking'] ?? '',
+        $rows[] = [
+            bh_zeit((string) ($record['createdAt'] ?? '')),
+            (string) ($record['firstName'] ?? ''),
+            (string) ($record['lastName'] ?? ''),
+            (string) ($record['email'] ?? ''),
+            (string) ($record['phone'] ?? ''),
+            (string) ($record['rooms'] ?? ''),
+            (string) ($record['area'] ?? ''),
+            (string) ($record['moveIn'] ?? ''),
+            (string) ($record['parking'] ?? ''),
             bh_has_extra($extras, 'garten') ? 'ja' : '',
             bh_has_extra($extras, 'attika') ? 'ja' : '',
             bh_has_extra($extras, 'bastelraum') ? 'ja' : '',
             bh_has_extra($extras, 'haustier') ? 'ja' : '',
-            $record['locale'] ?? '',
+            (string) ($record['locale'] ?? ''),
             str_replace(["\r\n", "\r", "\n"], ' ', (string) ($record['message'] ?? '')),
-        ], ';', '"', '\\');
-
-        flock($handle, LOCK_UN);
-        return true;
-    } finally {
-        fclose($handle);
+        ];
     }
+
+    return $rows;
 }
 
-/** Interne Benachrichtigung, erst nach der Bestätigung. */
+/**
+ * Die Liste als CSV.
+ *
+ * Semikolon statt Komma und ein BOM voran, damit Excel die Datei in der
+ * Schweizer Einstellung ohne Importdialog richtig aufteilt und Umlaute
+ * nicht zerlegt.
+ */
+function bh_list_csv(): string
+{
+    $handle = fopen('php://temp', 'r+');
+    fwrite($handle, "\u{FEFF}");
+    fputcsv($handle, LIST_COLUMNS, ';', '"', '\\');
+    foreach (bh_list_rows() as $row) {
+        fputcsv($handle, $row, ';', '"', '\\');
+    }
+    rewind($handle);
+    $csv = (string) stream_get_contents($handle);
+    fclose($handle);
+
+    return $csv;
+}
+
+/**
+ * Schreibt `birkenhain-data/anmeldungen.csv` neu — eine Zeile je Anmeldung,
+ * zum Anklicken im Dateimanager.
+ *
+ * Erzeugt, nicht fortgeschrieben: eine Anmeldung steht sofort drin und
+ * bekommt später ihr Bestätigungsdatum dazu. Eine nur angehängte Datei
+ * könnte das nicht nachtragen.
+ *
+ * Erst in eine Nebendatei, dann `rename()`: wer die Datei währenddessen
+ * herunterlädt, bekommt den alten oder den neuen Stand, nie einen halben.
+ *
+ * Schlägt das Schreiben fehl, ist das kein Grund, die Anmeldung scheitern
+ * zu lassen — sie steht dann in der Datenbank, und `liste.php` liest
+ * ohnehin von dort.
+ */
+function bh_write_list(): bool
+{
+    $file = bh_config()['data_dir'] . '/anmeldungen.csv';
+    $tmp = $file . '.' . bin2hex(random_bytes(4));
+
+    if (@file_put_contents($tmp, bh_list_csv()) === false) {
+        return false;
+    }
+    if (!@rename($tmp, $file)) {
+        @unlink($tmp);
+        return false;
+    }
+
+    return true;
+}
+
+// --- Abruf der Liste ------------------------------------------------------
+
+/**
+ * Stimmt das eingegebene Passwort?
+ *
+ * `password_verify` braucht von sich aus konstante Zeit. Ein leerer Hash
+ * in der Konfiguration sperrt den Abruf, statt ihn freizugeben.
+ *
+ * Bewusst ohne Sitzung und ohne Cookie: die Datenschutzerklärung sagt,
+ * dass diese Website keine Cookies setzt, und das soll auch für die
+ * Abrufseite gelten. Der Preis ist, dass das Passwort bei jedem Abruf
+ * erneut eingegeben wird — bei einer Seite, die man selten öffnet, ist
+ * das kein Verlust.
+ */
+function bh_list_password_ok(string $eingabe): bool
+{
+    $hash = bh_config()['list_password_hash'] ?? '';
+    if (!is_string($hash) || $hash === '' || $eingabe === '') {
+        return false;
+    }
+    return password_verify($eingabe, $hash);
+}
+
+/** Spalten der aussortierten Anmeldungen. */
+const SPAM_COLUMNS = ['Eingegangen', 'Punkte', 'Gründe', 'Vorname', 'Name', 'E-Mail', 'Bemerkung'];
+
+/** Aussortierte Anmeldungen, neueste zuerst. */
+function bh_spam_rows(): array
+{
+    $stmt = bh_db()->query('SELECT payload, punkte, gruende, created_at FROM spam ORDER BY id DESC');
+    $rows = [];
+
+    foreach ($stmt as $zeile) {
+        $record = json_decode((string) $zeile['payload'], true);
+        if (!is_array($record)) {
+            continue;
+        }
+
+        $rows[] = [
+            bh_zeit((int) $zeile['created_at']),
+            (string) $zeile['punkte'],
+            (string) $zeile['gruende'],
+            (string) ($record['firstName'] ?? ''),
+            (string) ($record['lastName'] ?? ''),
+            (string) ($record['email'] ?? ''),
+            str_replace(["\r\n", "\r", "\n"], ' ', (string) ($record['message'] ?? '')),
+        ];
+    }
+
+    return $rows;
+}
+
+/** Interne Benachrichtigung, sobald eine Anmeldung eingegangen ist. */
 function bh_notify_mail(array $record): array
 {
     $lines = [];
@@ -628,9 +822,9 @@ function bh_notify_mail(array $record): array
     }
 
     return [
-        'subject' => 'Neue bestätigte Anmeldung — Im Birkenhain',
+        'subject' => 'Neue Anmeldung — Im Birkenhain',
         'body' => implode("\n", array_merge(
-            ['Eine Anmeldung wurde per Double-Opt-In bestätigt.', ''],
+            ['Eine neue Anmeldung ist eingegangen und steht in der Liste.', ''],
             $lines,
         )),
     ];
