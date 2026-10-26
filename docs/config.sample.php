@@ -21,6 +21,14 @@ return [
     // Erzeugen mit: openssl rand -base64 48
     'opt_in_secret' => '',
 
+    // Schützt den Abruf der Anmeldeliste über /api/liste.php. Nur der
+    // Hash, nie das Passwort selbst. Erzeugen mit:
+    //   php -r "echo password_hash('…', PASSWORD_DEFAULT);"
+    // Bewusst auskommentiert: ohne Eintrag gilt der Hash aus
+    // CONFIG_DEFAULTS in public/api/lib/birkenhain.php. Ein leerer Wert
+    // hier würde den Abruf vollständig sperren.
+    // 'list_password_hash' => '…',
+
     // Absender der Bestätigungsmail. Muss eine Adresse der eigenen Domain
     // sein, damit SPF und DKIM des Hosters greifen.
     'mail_from' => 'Im Birkenhain <noreply@birkenhain.ch>',
