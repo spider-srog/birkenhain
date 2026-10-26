@@ -117,6 +117,21 @@ curl -sS -H 'Accept: application/json' -d firstName=A -d lastName=B \
 
 `{"ok":true}` heisst: die Bestätigungsmail ist unterwegs.
 
+**Ohne diese Datei nimmt das Formular keine Anmeldung an.** Es antwortet
+dann mit `{"error":"config"}` (bzw. leitet auf `/anmeldung/fehler`), und
+im Fehlerprotokoll von PHP steht `[birkenhain] Konfiguration unbrauchbar:
+…`. Gespeichert wird in dem Fall nichts — es geht also nichts verloren,
+aber es kommt auch nichts an. Genau das war der Zustand am 26.10.2026.
+Prüfen lässt sich das von aussen:
+
+```bash
+curl -sS -H 'Accept: application/json' -d firstName=A -d lastName=B \
+  -d email=test@example.test -d consent=on -d locale=de \
+  https://birkenhain.ch/api/anmeldung.php
+```
+
+`{"ok":true}` heisst: die Bestätigungsmail ist unterwegs.
+
 Liegt das Verzeichnis woanders, den Pfad per `BIRKENHAIN_DATA_DIR` setzen
 (in der `.htaccess` mit `SetEnv BIRKENHAIN_DATA_DIR /pfad/dazu`). Ohne
 Angabe sucht der Endpoint `birkenhain-data/` neben dem Webroot.
