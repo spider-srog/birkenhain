@@ -54,12 +54,12 @@ src/
   pages/en/               EN-Routen
 public/
   .htaccess             Caching, Security-Header, CSP, Fehlerseiten
-  api/anmeldung.php     Formular annehmen, Double-Opt-In verschicken
-  api/bestaetigen.php   Opt-In-Link einlösen
+  api/anmeldung.php     Formular annehmen, Spamabwehr, in die Liste
+  api/liste.php         Liste abrufen, passwortgeschützt
   api/lib/              gemeinsame Logik, per .htaccess gesperrt
   fonts/                gehostete Schrift
 scripts/fetch-fonts.mjs      Readex Pro woff2 lokal holen
-scripts/test-endpoint.sh     19 Fälle gegen PHPs eingebauten Server
+scripts/test-endpoint.sh     Fälle gegen PHPs eingebauten Server
 ```
 
 Routen (echte Dateien, kein clientseitiger State):

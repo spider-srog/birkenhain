@@ -26,31 +26,59 @@ const UA =
 /** Nur der Latin-Subset; die uebrigen braucht das Projekt nicht. */
 const LATIN = 'U+0000-00FF';
 
+/**
+ * Holt das CSS und liest die woff2-URLs heraus.
+ *
+ * Google antwortet nicht immer gleich: am 26.10.2026 kam eine Antwort
+ * ohne den Latin-Subset zurueck und liess damit den Deploy auf `main`
+ * scheitern. Ein zweiter Versuch genuegte. Darum die Schleife — der
+ * Deploy soll nicht an einer Laune des Kantenservers haengen.
+ */
+async function fetchFaces() {
+  const versuche = 3;
+  let letzter;
+
+  for (let n = 1; n <= versuche; n++) {
+    try {
+      const response = await fetch(CSS_URL, { headers: { 'user-agent': UA } });
+      if (!response.ok) throw new Error(`Google Fonts antwortete mit ${response.status}`);
+
+      const css = await response.text();
+      const blocks = css.match(/@font-face\s*\{[^}]*\}/g) ?? [];
+      if (blocks.length === 0) throw new Error('Keine @font-face-Regeln in der Antwort gefunden.');
+
+      // URL -> welche Weights darauf zeigen.
+      const byUrl = new Map();
+
+      for (const block of blocks) {
+        const range = block.match(/unicode-range:\s*([^;]+);/)?.[1] ?? '';
+        if (range && !range.includes(LATIN)) continue;
+
+        const weight = block.match(/font-weight:\s*([^;]+);/)?.[1]?.trim();
+        const url = block.match(/url\((https:[^)]+\.woff2)\)/)?.[1];
+        if (!weight || !url) continue;
+
+        byUrl.set(url, [...(byUrl.get(url) ?? []), weight]);
+      }
+
+      if (byUrl.size === 0) throw new Error('Keine woff2-URL fuer den Latin-Subset gefunden.');
+      return byUrl;
+    } catch (fehler) {
+      letzter = fehler;
+      if (n < versuche) {
+        console.error(`Versuch ${n} fehlgeschlagen (${fehler.message}), neuer Versuch …`);
+        await new Promise((fertig) => setTimeout(fertig, n * 2000));
+      }
+    }
+  }
+
+  throw letzter;
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
 
-  const response = await fetch(CSS_URL, { headers: { 'user-agent': UA } });
-  if (!response.ok) throw new Error(`Google Fonts antwortete mit ${response.status}`);
-
-  const css = await response.text();
-  const blocks = css.match(/@font-face\s*\{[^}]*\}/g) ?? [];
-  if (blocks.length === 0) throw new Error('Keine @font-face-Regeln in der Antwort gefunden.');
-
-  // URL -> welche Weights darauf zeigen.
-  const byUrl = new Map();
-
-  for (const block of blocks) {
-    const range = block.match(/unicode-range:\s*([^;]+);/)?.[1] ?? '';
-    if (range && !range.includes(LATIN)) continue;
-
-    const weight = block.match(/font-weight:\s*([^;]+);/)?.[1]?.trim();
-    const url = block.match(/url\((https:[^)]+\.woff2)\)/)?.[1];
-    if (!weight || !url) continue;
-
-    byUrl.set(url, [...(byUrl.get(url) ?? []), weight]);
-  }
-
-  if (byUrl.size === 0) throw new Error('Keine woff2-URL fuer den Latin-Subset gefunden.');
+  const byUrl = await fetchFaces();
 
   const variable = byUrl.size === 1;
 

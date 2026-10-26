@@ -28,11 +28,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
 
 $locale = ($_POST['locale'] ?? '') === 'en' ? 'en' : 'de';
 
-// Honeypot: still verwerfen und Erfolg melden, damit Bots nichts lernen.
-if (bh_is_bot($_POST)) {
-    bh_respond($locale, 'sent', 200, ['ok' => true]);
-}
-
 $result = bh_validate($_POST);
 $locale = $result['value']['locale'];
 
@@ -50,52 +45,32 @@ try {
         bh_respond($locale, 'rateLimit', 429, ['error' => 'rate-limit']);
     }
 
-    $db = bh_db();
+    $record = $value + ['createdAt' => gmdate('c')];
 
-    // Bereits bestätigte Adressen bleiben, wie sie sind — aber die Antwort
-    // verrät nicht, dass sie bekannt sind.
-    $stmt = $db->prepare('SELECT confirmed_at FROM signups WHERE email_hash = ?');
-    $stmt->execute([$emailHash]);
-    $bestehend = $stmt->fetchColumn();
-    if ($bestehend !== false && (int) $bestehend > 0) {
+    // Spamabwehr an der Stelle, an der vorher der Honigtopf allein stand.
+    // Aussortierte Anmeldungen werden abgelegt, nicht verworfen, und die
+    // Antwort ist dieselbe wie bei Erfolg — ein Bot soll nichts lernen.
+    $urteil = bh_spam($_POST, $value);
+    if ($urteil['spam']) {
+        bh_spam_ablegen($record, $urteil);
+        bh_log('Aussortiert (' . $urteil['punkte'] . '): ' . implode(', ', $urteil['gruende']));
         bh_respond($locale, 'sent', 200, ['ok' => true]);
     }
 
-    $id = bin2hex(random_bytes(16));
-    $record = $value + ['createdAt' => gmdate('c')];
-    $json = json_encode($record, JSON_UNESCAPED_UNICODE);
-
-    $db->beginTransaction();
-    // Die Anmeldung steht sofort in der Liste, noch unbestätigt. Vorher
-    // hing der Eintrag am Klick in der Mail — kam die nicht an, kam die
-    // Anmeldung nie an.
-    // Upsert statt INSERT OR REPLACE: die Zeile behaelt ihre rowid und
-    // damit ihren Platz in der Liste. Eine schon bestaetigte Adresse kommt
-    // hier gar nicht erst an, ihr Datum kann also nicht verloren gehen.
-    $db->prepare('INSERT INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, 0)
+    // Bekannte Adressen aktualisieren statt verdoppeln. Die Antwort
+    // verrät nicht, dass die Adresse schon bekannt ist.
+    bh_db()->prepare('INSERT INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, 0)
         ON CONFLICT(email_hash) DO UPDATE SET payload = excluded.payload')
-        ->execute([$emailHash, $json]);
-    // Der Bestätigungslink braucht weiterhin seine eigene Zeile: er trägt
-    // eine Einmal-ID und nicht die Adresse.
-    $db->prepare('INSERT INTO pending (id, email_hash, payload, created_at) VALUES (?, ?, ?, ?)')
-        ->execute([$id, $emailHash, $json, time()]);
-    $db->commit();
+        ->execute([$emailHash, json_encode($record, JSON_UNESCAPED_UNICODE)]);
 
     if (!bh_write_list()) {
         bh_log('Liste nicht schreibbar, Anmeldung nur in der Datenbank: ' . $emailHash);
     }
 
-    // Die Bestätigungsmail ist ab hier eine Höflichkeit, keine Bedingung.
-    // Kommt sie nicht durch, steht die Anmeldung trotzdem; die Zeile in der
-    // Liste bleibt dann ohne Bestätigungsdatum.
-    $link = bh_origin() . '/api/bestaetigen.php?id=' . urlencode($id) . '&sig=' . urlencode(bh_sign($id));
-    $mail = bh_opt_in_mail($locale, $value['firstName'], $link);
-    if (!bh_mail($value['email'], $mail['subject'], $mail['body'])) {
-        bh_log('Mailversand fehlgeschlagen für ' . $emailHash);
-    }
-
-    // Interne Meldung jetzt beim Eingang statt erst bei der Bestätigung —
-    // sonst bliebe eine unbestätigte Anmeldung unbemerkt.
+    // Interne Meldung beim Eingang. Eine Bestätigungsmail an die
+    // Interessentin gibt es nicht mehr: sie hing an einem Mailversand,
+    // auf den kein Verlass war, und was sie abwehren sollte, leistet
+    // jetzt bh_spam().
     $notifyTo = bh_config()['mail_notify_to'] ?? '';
     if (is_string($notifyTo) && $notifyTo !== '') {
         $meldung = bh_notify_mail($record);

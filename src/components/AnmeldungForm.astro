@@ -67,11 +67,15 @@ const extraOptions = [
 <form class="form" action={withBase("/api/anmeldung.php")} method="post" data-form novalidate>
   <input type="hidden" name="locale" value={locale} />
   {/* Honeypot: fuer Menschen unsichtbar und aus dem Tab-Fluss genommen.
-      Ist das Feld gefuellt, verwirft der Endpoint die Anfrage. */}
+      Ist das Feld gefuellt, sortiert der Endpoint die Anfrage aus. */}
   <div class="form__trap" aria-hidden="true">
     <label for="website">Website</label>
     <input id="website" type="text" name="website" tabindex="-1" autocomplete="off" />
   </div>
+  {/* Dauer des Ausfuellens in Millisekunden, gesetzt beim Absenden. Ohne
+      JavaScript bleibt das Feld leer und zaehlt in der Spamabwehr nicht
+      mit — das Formular funktioniert dann unveraendert. */}
+  <input type="hidden" name="gestartet" value="" data-elapsed />
 
   <fieldset class="form__set">
     <legend class="visually-hidden">{t('anmeldung.legendContact')}</legend>
