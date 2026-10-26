@@ -84,7 +84,45 @@ const PATHS = [
  */
 class BhConfigError extends RuntimeException
 {
+    /**
+     * Kurzer, sprachneutraler Code für die Antwort — `config-kaputt`,
+     * `datenverzeichnis`, `schluessel`. Er benennt die Stelle, nie den
+     * Inhalt: die Ursache soll von aussen lesbar sein, ohne dass die
+     * Antwort Pfade oder Secrets ausplaudert.
+     */
+    public function __construct(string $message, public readonly string $hinweis = '')
+    {
+        parent::__construct($message);
+    }
 }
+
+/**
+ * Vorgaben, falls keine `config.php` auf dem Server liegt.
+ *
+ * Bis zum 26.10.2026 verweigerte der Endpoint ohne diese Datei den Dienst
+ * — in der Absicht, eine fehlende Konfiguration nicht stillschweigend
+ * durchlaufen zu lassen. Live hiess das: das Formular nahm wochenlang
+ * keine Anmeldung an, und von aussen war nicht zu sehen, warum. Die
+ * Absicht war richtig, der Preis zu hoch.
+ *
+ * Darum stehen die Werte jetzt hier. Es sind dieselben wie in
+ * `docs/config.sample.php`, also keine erfundenen: die Absenderadresse
+ * der Domain, die interne Empfängerin, der Mailweg des Hosters. Eine
+ * vorhandene `config.php` sticht sie Feld für Feld.
+ *
+ * `opt_in_secret` bleibt leer — ein Geheimnis gehört nicht in den Code.
+ * Fehlt es, erzeugt `bh_secret()` eines und legt es neben der Datenbank
+ * ab. `site_origin` bleibt leer, damit die Bestätigungslinks auf den
+ * Host zeigen, der tatsächlich antwortet, und nicht auf die Produktion,
+ * wenn das hier einmal woanders läuft.
+ */
+const CONFIG_DEFAULTS = [
+    'opt_in_secret' => '',
+    'mail_from' => 'Im Birkenhain <noreply@birkenhain.ch>',
+    'mail_notify_to' => 'birkenhain@realnorth.ch',
+    'mail_transport' => 'mail',
+    'site_origin' => '',
+];
 
 /**
  * Konfiguration. Liegt bewusst ausserhalb des Webroots — die Secrets
@@ -105,27 +143,88 @@ function bh_config(): array
     }
 
     $file = rtrim($dir, '/') . '/config.php';
-    if (!is_file($file)) {
-        throw new BhConfigError("Konfiguration fehlt: {$file}");
+    $loaded = [];
+
+    if (is_file($file)) {
+        $loaded = require $file;
+        // Eine vorhandene, aber unbrauchbare Datei ist ein echter Fehler:
+        // hier hat jemand etwas gewollt, und es ist schiefgegangen.
+        if (!is_array($loaded)) {
+            throw new BhConfigError('config.php muss ein Array zurückgeben.', 'config-kaputt');
+        }
     }
 
-    $loaded = require $file;
-    if (!is_array($loaded)) {
-        throw new BhConfigError('config.php muss ein Array zurückgeben.');
-    }
-
-    $loaded['data_dir'] = rtrim($dir, '/');
-    $config = $loaded;
+    $config = $loaded + CONFIG_DEFAULTS;
+    $config['data_dir'] = rtrim($dir, '/');
     return $config;
+}
+
+/** Das Datenverzeichnis, angelegt falls noch nicht vorhanden. */
+function bh_data_dir(): string
+{
+    $dir = bh_config()['data_dir'];
+    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new BhConfigError("Datenverzeichnis nicht anlegbar: {$dir}", 'datenverzeichnis');
+    }
+    return $dir;
 }
 
 function bh_secret(): string
 {
     $secret = bh_config()['opt_in_secret'] ?? '';
-    if (!is_string($secret) || strlen($secret) < 32) {
-        throw new BhConfigError('opt_in_secret fehlt oder ist kürzer als 32 Zeichen.');
+    if (is_string($secret) && strlen($secret) >= 32) {
+        return $secret;
     }
-    return $secret;
+    return bh_stored_secret();
+}
+
+/**
+ * Schlüssel für die Double-Opt-In-Links, erzeugt beim ersten Bedarf und
+ * neben der Datenbank abgelegt.
+ *
+ * Er ist nicht schwächer als ein von Hand eingetragener: 36 Zufallsbytes
+ * aus `random_bytes()`, Datei nur für den eigenen Benutzer lesbar, am
+ * selben Ort wie die Anmeldungen selbst. Was er spart, ist der Schritt,
+ * an dem es live gescheitert ist.
+ *
+ * Geht die Datei verloren, laufen offene Bestätigungslinks ins Leere —
+ * bestätigte Anmeldungen bleiben unberührt, und offene verfallen ohnehin
+ * nach sieben Tagen.
+ */
+function bh_stored_secret(): string
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+
+    $file = bh_data_dir() . '/opt-in-secret';
+    $vorhanden = is_file($file) ? trim((string) @file_get_contents($file)) : '';
+    if (strlen($vorhanden) >= 32) {
+        return $cached = $vorhanden;
+    }
+
+    $neu = rtrim(strtr(base64_encode(random_bytes(36)), '+/', '-_'), '=');
+
+    // Erst daneben schreiben, dann umbenennen: so sieht ein paralleler
+    // Request entweder keinen oder einen vollständigen Schlüssel, nie
+    // einen halben.
+    $tmp = $file . '.' . bin2hex(random_bytes(4));
+    if (@file_put_contents($tmp, $neu . "\n") === false) {
+        throw new BhConfigError("Schlüssel nicht schreibbar: {$file}", 'schluessel');
+    }
+    @chmod($tmp, 0600);
+    if (!@rename($tmp, $file)) {
+        @unlink($tmp);
+        throw new BhConfigError("Schlüssel nicht ablegbar: {$file}", 'schluessel');
+    }
+
+    bh_log('Neuer Opt-In-Schlüssel angelegt: ' . $file);
+
+    // Legen zwei Requests gleichzeitig an, gewinnt der letzte. Wir lesen
+    // zurück, damit beide denselben benutzen.
+    $final = trim((string) @file_get_contents($file));
+    return $cached = (strlen($final) >= 32 ? $final : $neu);
 }
 
 /** SQLite statt KV: eine Datei, transaktional, auf jedem Hoster vorhanden. */
@@ -136,10 +235,7 @@ function bh_db(): PDO
         return $db;
     }
 
-    $dir = bh_config()['data_dir'];
-    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
-        throw new RuntimeException("Datenverzeichnis nicht anlegbar: {$dir}");
-    }
+    $dir = bh_data_dir();
 
     $db = new PDO('sqlite:' . $dir . '/anmeldungen.sqlite', null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -364,7 +460,7 @@ function bh_mail(string $to, string $subject, string $body): bool
 {
     $from = bh_config()['mail_from'] ?? '';
     if ($from === '') {
-        throw new BhConfigError('mail_from fehlt in der Konfiguration.');
+        throw new BhConfigError('mail_from fehlt in der Konfiguration.', 'absender');
     }
 
     $headers = implode("\r\n", [

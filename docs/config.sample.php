@@ -8,6 +8,12 @@
  * Fehlkonfiguration von PHP nicht ausgeliefert werden kann.
  *
  * Kopieren nach: <über dem Webroot>/birkenhain-data/config.php
+ *
+ * Optional: ohne diese Datei gelten die Vorgaben aus
+ * `public/api/lib/birkenhain.php` (CONFIG_DEFAULTS) — dieselben Werte wie
+ * hier, nur ohne Secret; das erzeugt der Endpoint sich dann selbst. Was
+ * hier steht, sticht die Vorgaben Feld für Feld, also genügt es, die
+ * abweichenden Zeilen einzutragen.
  */
 
 return [
