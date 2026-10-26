@@ -72,6 +72,7 @@ npm run build        # nach dist/
 ├── birkenhain-data/          <- hierhin
 │   ├── config.php
 │   ├── anmeldungen.sqlite    (wird beim ersten Request angelegt)
+│   ├── anmeldungen.csv       (Liste, wird bei der ersten Bestätigung angelegt)
 │   └── mail.log              (nur bei mail_transport = log)
 └── www/                      <- Webroot, hier landet dist/
 ```
@@ -86,6 +87,21 @@ openssl rand -base64 48
 Der Endpoint verweigert den Dienst, wenn `opt_in_secret` fehlt oder kürzer
 als 32 Zeichen ist — bewusst, damit eine fehlende Konfiguration nicht als
 stiller Fehler durchläuft.
+
+**Ohne diese Datei nimmt das Formular keine Anmeldung an.** Es antwortet
+dann mit `{"error":"config"}` (bzw. leitet auf `/anmeldung/fehler`), und
+im Fehlerprotokoll von PHP steht `[birkenhain] Konfiguration unbrauchbar:
+…`. Gespeichert wird in dem Fall nichts — es geht also nichts verloren,
+aber es kommt auch nichts an. Genau das war der Zustand am 26.10.2026.
+Prüfen lässt sich das von aussen:
+
+```bash
+curl -sS -H 'Accept: application/json' -d firstName=A -d lastName=B \
+  -d email=test@example.test -d consent=on -d locale=de \
+  https://birkenhain.ch/api/anmeldung.php
+```
+
+`{"ok":true}` heisst: die Bestätigungsmail ist unterwegs.
 
 Liegt das Verzeichnis woanders, den Pfad per `BIRKENHAIN_DATA_DIR` setzen
 (in der `.htaccess` mit `SetEnv BIRKENHAIN_DATA_DIR /pfad/dazu`). Ohne
@@ -196,6 +212,34 @@ Apache sitzt und `.htaccess` damit ignoriert wird.
 - [ ] Passwortschutz entfernen
 
 ## Anmeldungen auslesen
+
+**Der kurze Weg: `birkenhain-data/anmeldungen.csv`.** Jede bestätigte
+Anmeldung bekommt dort eine Zeile — Semikolon als Trennzeichen und ein BOM
+voran, damit Excel die Datei per Doppelklick richtig aufteilt und die
+Umlaute stehen lässt. Die Spalten:
+
+```
+Bestätigt am; Vorname; Name; E-Mail; Telefon; Zimmer; Fläche ab (m²);
+Bezugstermin; Einstellplatz; Gartenwohnung; Attikawohnung; Bastelraum;
+Haustier; Sprache; Bemerkung
+```
+
+Die Datei wird nur ergänzt, nie überschrieben, und entsteht erst mit der
+ersten Bestätigung. Sie ist die lesbare Sicht, nicht die Ablage: verbindlich
+bleibt die Datenbank. Lässt sie sich nicht schreiben, steht die Anmeldung
+trotzdem in der Datenbank und im Protokoll die Zeile `[birkenhain] Liste
+nicht beschreibbar`.
+
+Herunterladen über den Dateimanager von Plesk oder per `scp`:
+
+```bash
+scp <user>@birkenhain.ch:birkenhain-data/anmeldungen.csv .
+```
+
+Einen Download über die Webseite gibt es bewusst nicht — die Liste liegt
+ausserhalb des Webroots und ist damit für keinen Browser erreichbar.
+
+### Aus der Datenbank
 
 SQLite, eine Datei. Als CSV exportieren:
 

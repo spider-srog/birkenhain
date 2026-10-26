@@ -40,6 +40,28 @@ const moveInOptions = [
   { value: '2030', label: t('anmeldung.moveIn2030') },
   { value: '2032', label: t('anmeldung.moveIn2032') },
 ];
+
+/**
+ * Einstellplatz: eine Auswahl statt zweier Haken, weil «mit» und «ohne»
+ * einander ausschliessen. «noch offen» steht wie bei den anderen Listen
+ * voran — kein Platz ist etwas anderes als keine Angabe.
+ */
+const parkingOptions = [
+  { value: 'ohne', label: t('anmeldung.parkingPlain') },
+  { value: 'mit', label: t('anmeldung.parkingCharger') },
+];
+
+/**
+ * Mehrfachauswahl: Haken, keine Liste. Es sind Wuensche, die sich nicht
+ * ausschliessen — eine Attikawohnung mit Bastelraum und Hund ist moeglich.
+ * Die Schluessel sind sprachneutral, der Endpoint kennt sie (EXTRAS).
+ */
+const extraOptions = [
+  { value: 'garten', label: t('anmeldung.extraGarden') },
+  { value: 'attika', label: t('anmeldung.extraAttic') },
+  { value: 'bastelraum', label: t('anmeldung.extraHobby') },
+  { value: 'haustier', label: t('anmeldung.extraPet') },
+];
 ---
 
 <form class="form" action={withBase("/api/anmeldung.php")} method="post" data-form novalidate>
@@ -114,7 +136,7 @@ const moveInOptions = [
   <fieldset class="form__set form__set--wish">
     <legend class="form__legend">{t('anmeldung.legendWish')}</legend>
 
-    <div class="form__grid form__grid--three">
+    <div class="form__grid">
       <p class="form__field">
         <label for="rooms">{t('anmeldung.rooms')}</label>
         <select id="rooms" name="rooms">
@@ -138,7 +160,29 @@ const moveInOptions = [
           {moveInOptions.map((option) => <option value={option.value}>{option.label}</option>)}
         </select>
       </p>
+
+      <p class="form__field">
+        <label for="parking">{t('anmeldung.parking')}</label>
+        <select id="parking" name="parking">
+          <option value="">{t('anmeldung.parkingAny')}</option>
+          {parkingOptions.map((option) => <option value={option.value}>{option.label}</option>)}
+        </select>
+      </p>
     </div>
+
+    <fieldset class="form__sub">
+      <legend class="form__sublegend">{t('anmeldung.extras')}</legend>
+      <ul class="form__checks">
+        {
+          extraOptions.map((option) => (
+            <li class="form__check">
+              <input id={`extra-${option.value}`} name="extras[]" type="checkbox" value={option.value} />
+              <label for={`extra-${option.value}`}>{option.label}</label>
+            </li>
+          ))
+        }
+      </ul>
+    </fieldset>
 
     <p class="form__field form__field--wide">
       <label for="message">{t('anmeldung.message')}</label>
@@ -302,6 +346,31 @@ const moveInOptions = [
     color: var(--c-accent);
   }
 
+  /* Die Wunsch-Haken: eine Gruppe im Gruppenfeld, eine Stufe leiser als
+     die Legende darueber. */
+  .form__sub {
+    margin: 1.625rem 0 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .form__sublegend {
+    padding: 0 0 0.6875rem;
+    font-size: 0.75rem;
+    font-weight: var(--fw-semibold);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--c-text-subtle);
+  }
+
+  .form__checks {
+    display: grid;
+    gap: 0.6875rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
   .form__check {
     display: flex;
     align-items: start;
@@ -390,8 +459,9 @@ const moveInOptions = [
       grid-template-columns: repeat(2, 1fr);
     }
 
-    .form__grid--three {
-      grid-template-columns: repeat(auto-fit, minmax(9.375rem, 1fr));
+    .form__checks {
+      grid-template-columns: repeat(2, 1fr);
+      column-gap: 1.125rem;
     }
   }
 </style>

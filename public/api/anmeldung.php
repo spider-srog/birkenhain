@@ -78,6 +78,11 @@ try {
         bh_log('Mailversand fehlgeschlagen für ' . $emailHash);
         bh_respond($locale, 'error', 502, ['error' => 'mail-failed']);
     }
+} catch (BhConfigError $error) {
+    // Eigene Antwort, damit von aussen lesbar ist, dass die Konfiguration
+    // auf dem Server fehlt — und nicht das Formular defekt ist.
+    bh_log('Konfiguration unbrauchbar: ' . $error->getMessage());
+    bh_respond($locale, 'error', 500, ['error' => 'config']);
 } catch (Throwable $error) {
     bh_log('Anmeldung fehlgeschlagen: ' . $error->getMessage());
     bh_respond($locale, 'error', 500, ['error' => 'server-error']);
