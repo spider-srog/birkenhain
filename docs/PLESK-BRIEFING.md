@@ -26,12 +26,14 @@ Frage aktiv nach. Rate nichts davon.
 2. **Die Domain.** Erwartet ist `birkenhain.ch`. Das ist erschlossen, nicht
    bestätigt — lass es bestätigen. Falls es anders lautet, sag es, es ändert
    zwei Konfigurationswerte.
-3. **Absenderadresse** für die Bestätigungsmail, z. B.
+3. **Absenderadresse** für die interne Benachrichtigung, z. B.
    `noreply@birkenhain.ch`. Muss auf der eigenen Domain liegen.
 4. **Empfängeradresse** für die interne Benachrichtigung bei jeder
-   bestätigten Anmeldung.
-5. **Ein Geheimnis mit mindestens 32 Zeichen** für die Signatur der
-   Bestätigungslinks. **Erzeuge es nicht selbst** — ein von einem
+   Anmeldung.
+5. **Ein Geheimnis mit mindestens 32 Zeichen** für den Prüfwert der
+   E-Mail-Adressen. Optional: fehlt es, erzeugt der Endpoint sich selbst
+   eines und legt es als `birkenhain-data/opt-in-secret` ab. Soll eines
+   von Hand gesetzt werden: **erzeuge es nicht selbst** — ein von einem
    Sprachmodell erfundener String ist nicht kryptografisch zufällig. Bitte
    die Person, eines zu erzeugen, etwa mit `openssl rand -base64 48` oder
    einem Passwortmanager, und einzufügen.
@@ -142,26 +144,24 @@ bereits richtig drin:
 <?php
 
 return [
-    // Mindestens 32 Zeichen, von der Person geliefert. Nicht selbst erfinden.
+    // Optional. Mindestens 32 Zeichen, von der Person geliefert. Nicht
+    // selbst erfinden. Weglassen ist in Ordnung — dann erzeugt der
+    // Endpoint sich eines.
     'opt_in_secret' => 'HIER_EINSETZEN',
 
     // Adresse der eigenen Domain, sonst greifen SPF und DKIM nicht.
     'mail_from' => 'Im Birkenhain <noreply@birkenhain.ch>',
 
-    // Interne Benachrichtigung nach bestätigter Anmeldung.
+    // Interne Benachrichtigung bei jeder Anmeldung.
     'mail_notify_to' => 'birkenhain@realnorth.ch',
 
     // Erst 'log' zum Testen, danach 'mail'.
     'mail_transport' => 'log',
 
-    // Muss die echte Domain sein: hieraus wird der Bestätigungslink gebaut.
+    // Die echte Domain.
     'site_origin' => 'https://birkenhain.ch',
 ];
 ```
-
-`site_origin` ist der kritische Wert. Steht dort die falsche Domain, zeigen
-alle Bestätigungslinks ins Leere — und weil ohne Bestätigung nichts
-gespeichert wird, wäre die Anmeldung kaputt, ohne dass es auffällt.
 
 Rechte: die Datei sollte nicht für andere lesbar sein. In Plesk über
 *Berechtigungen ändern* auf `600` setzen, das Verzeichnis auf `700`, sofern
@@ -213,9 +213,9 @@ Ohne HTTPS liefert der Browser bei einem Formular eine Warnung.
 es noch nicht existiert.
 
 *Mail-Einstellungen* der Subskription: **DKIM** und **SPF** aktivieren.
-Ohne beides landet die Bestätigungsmail mit hoher Wahrscheinlichkeit im
-Spam — und dann funktioniert die Anmeldung faktisch nicht, weil ohne
-Klick auf den Link nichts gespeichert wird.
+Ohne beides landet die interne Benachrichtigung mit hoher
+Wahrscheinlichkeit im Spam. Die Anmeldung selbst hängt nicht daran — sie
+wird mit dem Absenden gespeichert, ob eine Mail ankommt oder nicht.
 
 ### 10. Durchgang testen
 
@@ -223,12 +223,12 @@ Erst mit `mail_transport => 'log'`:
 
 1. `https://birkenhain.ch/anmeldung` öffnen, Formular ausfüllen, absenden.
 2. Erwartet: Weiterleitung auf `/anmeldung/gesendet`.
-3. Im File Manager `birkenhain-data/mail.log` öffnen. Dort steht die Mail
-   samt Bestätigungslink.
-4. Den Link im Browser aufrufen. Erwartet: `/anmeldung/bestaetigt`.
-5. Denselben Link ein zweites Mal aufrufen. Erwartet:
-   `/anmeldung/bestaetigung-fehlgeschlagen` — der Link ist einmalig.
-6. In `birkenhain-data/` muss jetzt `anmeldungen.sqlite` liegen.
+3. Im File Manager `birkenhain-data/mail.log` öffnen. Dort steht die
+   interne Benachrichtigung.
+4. In `birkenhain-data/` müssen jetzt `anmeldungen.sqlite` und
+   `anmeldungen.csv` liegen; in der CSV steht die Anmeldung.
+5. `https://birkenhain.ch/api/liste.php` öffnen, Passwort eingeben.
+   Erwartet: dieselbe Anmeldung in der Tabelle.
 
 Dann `mail_transport` auf `'mail'` umstellen und den Durchgang mit einer
 echten Adresse wiederholen. Kommt keine Mail, prüfe *Mail* → Logs.

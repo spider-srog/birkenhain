@@ -30,6 +30,14 @@ export function initForm(): void {
     return;
   }
 
+  /**
+   * Wie lange das Ausfuellen gedauert hat. Ein Mensch braucht Sekunden,
+   * ein Bot nicht — der Endpoint wertet das als eines von mehreren
+   * Merkmalen. Gezaehlt wird ab dem Laden der Seite.
+   */
+  const start = Date.now();
+  const elapsed = form.querySelector<HTMLInputElement>('[data-elapsed]');
+
   const status = form.querySelector<HTMLElement>('[data-status]');
   const statusTitle = form.querySelector<HTMLElement>('[data-status-title]');
   const statusBody = form.querySelector<HTMLElement>('[data-status-body]');
@@ -96,6 +104,8 @@ export function initForm(): void {
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     clearErrors();
+
+    if (elapsed) elapsed.value = String(Date.now() - start);
 
     const data = new FormData(form);
     const errors = validate(data);

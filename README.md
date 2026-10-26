@@ -122,14 +122,19 @@ Leaflet keine Marker-PNGs nachlädt.
 
 ## Formular und Endpoint
 
-`public/api/anmeldung.php` und `public/api/bestaetigen.php`, gemeinsame Logik
-in `public/api/lib/`. Astro kopiert `public/` unverändert nach `dist/`, die
-Dateien landen also direkt im Webroot. Kein Composer, keine Extensions ausser
-`pdo_sqlite`.
+`public/api/anmeldung.php` nimmt an, `public/api/liste.php` gibt die Liste
+aus, gemeinsame Logik in `public/api/lib/`. Astro kopiert `public/`
+unverändert nach `dist/`, die Dateien landen also direkt im Webroot. Kein
+Composer, keine Extensions ausser `pdo_sqlite`.
 
-Ablauf: serverseitige Validierung → Honeypot → Rate-Limit → unbestätigt in
-die SQLite-Datenbank → Double-Opt-In-Mail. Erst der Klick auf den Link macht
-daraus eine Anmeldung; die interne Benachrichtigung geht auch erst dann raus.
+Ablauf: serverseitige Validierung → Rate-Limit → Spamabwehr → in die
+SQLite-Datenbank und in `anmeldungen.csv` → interne Benachrichtigung. Es
+gibt keine Bestätigungsmail: die Anmeldung steht mit dem Absenden, und was
+das Double-Opt-In abwehren sollte, leistet die Punktewertung in `bh_spam()`
+(Honigtopf, Tempo, Herkunft, Links in Namensfeldern, Erreichbarkeit der
+E-Mail-Domain). Aussortierte Anmeldungen werden 90 Tage aufbewahrt und auf
+der Abrufseite samt Begründung angezeigt, damit ein Fehlgriff nachholbar
+bleibt.
 
 - Verbindlich validiert wird auf dem Server; die Prüfung im Browser ist nur
   Bequemlichkeit.

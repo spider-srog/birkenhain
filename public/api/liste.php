@@ -49,12 +49,7 @@ if ($offen && ($_POST['format'] ?? '') === 'csv') {
 }
 
 $zeilen = $offen ? bh_list_rows() : [];
-$bestaetigt = 0;
-foreach ($zeilen as $zeile) {
-    if ($zeile[1] !== '') {
-        $bestaetigt++;
-    }
-}
+$aussortiert = $offen ? bh_spam_rows() : [];
 
 /** Kurzform für die Ausgabe — hier geht nichts ungefiltert ins HTML. */
 function e(string $wert): string
@@ -178,7 +173,22 @@ header('Content-Type: text/html; charset=utf-8');
   tbody tr:nth-child(even) { background: #faf8f5; }
   tbody tr:last-child td { border-bottom: 0; }
 
-  td.offen { color: var(--leise); }
+  .spam {
+    margin-top: 2.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--linie);
+  }
+
+  .spam summary {
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--leise);
+  }
+
+  .spam .hinweis {
+    max-width: 44rem;
+    margin: 0.75rem 0 1rem;
+  }
 
   .leer {
     padding: 3rem 1rem;
@@ -223,8 +233,7 @@ header('Content-Type: text/html; charset=utf-8');
 <?php else : ?>
 
   <p class="meta">
-    <?= count($zeilen) ?> <?= count($zeilen) === 1 ? 'Eintrag' : 'Einträge' ?>,
-    davon <?= $bestaetigt ?> mit bestätigter Adresse.
+    <?= count($zeilen) ?> <?= count($zeilen) === 1 ? 'Eintrag' : 'Einträge' ?>.
     Stand <?= e(bh_zeit(time())) ?>.
   </p>
 
@@ -243,12 +252,8 @@ header('Content-Type: text/html; charset=utf-8');
         <tbody>
           <?php foreach ($zeilen as $zeile) : ?>
             <tr>
-              <?php foreach ($zeile as $i => $wert) : ?>
-                <?php if ($i === 1 && $wert === '') : ?>
-                  <td class="offen">offen</td>
-                <?php else : ?>
-                  <td><?= e($wert) ?></td>
-                <?php endif; ?>
+              <?php foreach ($zeile as $wert) : ?>
+                <td><?= e($wert) ?></td>
               <?php endforeach; ?>
             </tr>
           <?php endforeach; ?>
@@ -263,11 +268,43 @@ header('Content-Type: text/html; charset=utf-8');
       <input type="hidden" name="format" value="csv">
       <button type="submit">Als CSV herunterladen</button>
     </form>
-    <p class="hinweis">
-      «offen» heisst: die Anmeldung steht, die E-Mail-Adresse wurde aber
-      nicht über den Link bestätigt.
-    </p>
   </div>
+
+  <?php if ($aussortiert !== []) : ?>
+    <details class="spam">
+      <summary>
+        <?= count($aussortiert) ?>
+        <?= count($aussortiert) === 1 ? 'Eintrag' : 'Einträge' ?>
+        von der Spamabwehr aussortiert
+      </summary>
+      <p class="hinweis">
+        Diese Anmeldungen stehen nicht in der Liste. Sie werden trotzdem
+        aufbewahrt, damit ein Fehlgriff der Abwehr sichtbar bleibt — steht
+        hier jemand zu Unrecht, bitte melden. Nach 90 Tagen verschwinden
+        sie von selbst.
+      </p>
+      <div class="tabellenrahmen">
+        <table>
+          <thead>
+            <tr>
+              <?php foreach (SPAM_COLUMNS as $spalte) : ?>
+                <th scope="col"><?= e($spalte) ?></th>
+              <?php endforeach; ?>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($aussortiert as $zeile) : ?>
+              <tr>
+                <?php foreach ($zeile as $wert) : ?>
+                  <td><?= e($wert) ?></td>
+                <?php endforeach; ?>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </details>
+  <?php endif; ?>
 
 <?php endif; ?>
 

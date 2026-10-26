@@ -5,13 +5,11 @@ import { pathFor, type Locale } from '../../i18n/routes';
 import { useTranslations } from '../../i18n/ui';
 
 /**
- * Statische Statusseiten. Der Endpoint leitet ohne JS hierher, und der
- * Double-Opt-In-Link aus der Mail zeigt direkt auf `confirmed` bzw.
- * `confirm-failed` — deshalb echte Routen und kein Query-Parameter:
- * im static output steht `Astro.url.searchParams` zur Buildzeit nicht
- * zur Verfuegung.
+ * Statische Statusseiten. Ohne JavaScript leitet der Endpoint hierher —
+ * deshalb echte Routen und kein Query-Parameter: im static output steht
+ * `Astro.url.searchParams` zur Buildzeit nicht zur Verfuegung.
  */
-type StatusKind = 'sent' | 'confirmed' | 'confirm-failed' | 'error' | 'rate-limit';
+type StatusKind = 'sent' | 'error' | 'rate-limit';
 
 interface Props {
   locale: Locale;
@@ -23,12 +21,6 @@ const t = useTranslations(locale);
 
 const CONTENT = {
   sent: { title: 'anmeldung.successTitle', body: 'anmeldung.successBody', ok: true },
-  confirmed: { title: 'anmeldung.confirmedTitle', body: 'anmeldung.confirmedBody', ok: true },
-  'confirm-failed': {
-    title: 'anmeldung.confirmFailedTitle',
-    body: 'anmeldung.confirmFailedBody',
-    ok: false,
-  },
   error: { title: 'anmeldung.errorTitle', body: 'anmeldung.errorBody', ok: false },
   'rate-limit': { title: 'anmeldung.errorTitle', body: 'anmeldung.errors.rateLimit', ok: false },
 } as const;

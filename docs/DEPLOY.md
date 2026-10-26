@@ -83,8 +83,9 @@ braucht er nicht.** Fehlt sie, gelten die Vorgaben aus
 `public/api/lib/birkenhain.php` (`CONFIG_DEFAULTS`) — dieselben Werte wie
 in `docs/config.sample.php`: Absender `noreply@birkenhain.ch`, interne
 Meldung an `birkenhain@realnorth.ch`, Mailweg des Hosters. Den Schlüssel
-für die Bestätigungslinks erzeugt er beim ersten Bedarf und legt ihn als
-`opt-in-secret` daneben, nur für den eigenen Benutzer lesbar.
+für den Prüfwert der E-Mail-Adressen erzeugt er beim ersten Bedarf und
+legt ihn als `opt-in-secret` daneben, nur für den eigenen Benutzer
+lesbar.
 
 Das war bis zum 26.10.2026 anders: ohne `config.php` verweigerte der
 Endpoint den Dienst — in der Absicht, eine fehlende Konfiguration nicht
@@ -115,7 +116,7 @@ curl -sS -H 'Accept: application/json' -d firstName=A -d lastName=B \
   https://birkenhain.ch/api/anmeldung.php
 ```
 
-`{"ok":true}` heisst: die Bestätigungsmail ist unterwegs.
+`{"ok":true}` heisst: die Anmeldung steht auf der Liste.
 
 Liegt das Verzeichnis woanders, den Pfad per `BIRKENHAIN_DATA_DIR` setzen
 (in der `.htaccess` mit `SetEnv BIRKENHAIN_DATA_DIR /pfad/dazu`). Ohne
@@ -143,9 +144,9 @@ und bleibt unberührt.
 ## 5. Absenderadresse
 
 `mail_from` in der `config.php` muss eine Adresse der eigenen Domain sein.
-Dann greifen SPF und DKIM des Hosters und die Bestätigungsmail landet nicht
-im Spam. Eine fremde Absenderdomain funktioniert nicht — ohne bestätigten
-Link wird nichts gespeichert, das Formular wäre also faktisch kaputt.
+Dann greifen SPF und DKIM des Hosters und die interne Benachrichtigung
+landet nicht im Spam. Die Anmeldung selbst hängt nicht am Mailversand: sie
+wird mit dem Absenden gespeichert, ob eine Mail ankommt oder nicht.
 
 Vor dem Livegang mit `mail_transport => 'log'` testen: dann schreibt der
 Endpoint nach `birkenhain-data/mail.log`, statt zu senden.
@@ -207,12 +208,10 @@ Apache sitzt und `.htaccess` damit ignoriert wird.
 - [ ] Impressum und Datenschutzerklärung juristisch geprüft und eingesetzt
 - [ ] Domain bestätigt: `site` in `astro.config.mjs` und `site_origin` in
       der `config.php` zeigen auf die echte Domain. Beides steht auf
-      `birkenhain.ch` — erschlossen, nicht bestätigt. Ist es falsch, zeigen
-      die Double-Opt-In-Links ins Leere und es wird nie eine Anmeldung
-      gespeichert
+      `birkenhain.ch` — erschlossen, nicht bestätigt
 - [ ] `config.php` liegt über dem Webroot und ist nicht per URL erreichbar
 - [ ] `mail_transport` auf `mail`, Absenderadresse der eigenen Domain
-- [ ] Anmeldung einmal echt durchgespielt: Formular, Mail, Bestätigungslink,
+- [ ] Anmeldung einmal echt durchgespielt: Formular, Zeile in der Liste,
       interne Benachrichtigung
 - [ ] Formular ohne JavaScript getestet (Redirect auf die Statusseite)
 - [ ] Rate-Limit greift (mehr als 10 Versuche pro Stunde)
@@ -255,14 +254,10 @@ Trennzeichen und ein BOM voran, damit Excel die Datei per Doppelklick
 richtig aufteilt und die Umlaute stehen lässt. Die Spalten:
 
 ```
-Angemeldet am; Bestätigt am; Vorname; Name; E-Mail; Telefon; Zimmer;
-Fläche ab (m²); Bezugstermin; Einstellplatz; Gartenwohnung;
-Attikawohnung; Bastelraum; Haustier; Sprache; Bemerkung
+Angemeldet am; Vorname; Name; E-Mail; Telefon; Zimmer; Fläche ab (m²);
+Bezugstermin; Einstellplatz; Gartenwohnung; Attikawohnung; Bastelraum;
+Haustier; Sprache; Bemerkung
 ```
-
-Eine leere Spalte «Bestätigt am» heisst: die Anmeldung steht, die
-E-Mail-Adresse wurde aber nicht über den Link bestätigt. Die Anmeldung
-selbst hängt nicht daran — sie wird mit dem Absenden gespeichert.
 
 Die Datei wird bei jeder Anmeldung und jeder Bestätigung neu erzeugt, aus
 der Datenbank. Verbindlich bleibt die Datenbank; lässt sich die Datei
@@ -291,5 +286,40 @@ sqlite3 -header -csv birkenhain-data/anmeldungen.sqlite \
      FROM signups ORDER BY confirmed_at;" > anmeldungen.csv
 ```
 
-In `signups` stehen nur bestätigte Anmeldungen. `pending` enthält
-unbestätigte, die nach sieben Tagen von selbst verschwinden.
+In `signups` stehen die Anmeldungen, in `spam` die aussortierten.
+
+## Spamabwehr
+
+Es gibt keine Bestätigungsmail mehr. Statt zu prüfen, ob jemand auf einen
+Link klickt, bewertet `bh_spam()` jede Anmeldung nach mehreren Merkmalen
+und zählt Punkte:
+
+| Merkmal | Punkte |
+|---|---|
+| Honigtopf-Feld gefüllt | 10 |
+| Link im Vornamen, Namen oder Telefon | 7 |
+| BBCode in der Bemerkung | 6 |
+| E-Mail-Domain nimmt keine Mail an (MX/A) | 6 |
+| in unter 2,5 Sekunden ausgefüllt | 5 |
+| von einer fremden Seite abgeschickt | 5 |
+| zwei oder mehr Links in der Bemerkung | 4 |
+| Ziffern im Namen | 2 |
+
+Ab **6 Punkten** gilt eine Anmeldung als Spam. Ein einzelnes schwaches
+Merkmal reicht also nicht — ein schneller Mensch oder eine Ziffer im Namen
+allein fällt nicht durch.
+
+Kein Captcha, kein Dienst eines Dritten: ein reCAPTCHA würde die IP-Adresse
+jeder Besucherin an Google senden, was die Datenschutzerklärung zu Recht
+ausschliesst.
+
+Aussortierte Anmeldungen werden **nicht verworfen**, sondern 90 Tage in
+der Tabelle `spam` aufbewahrt und auf `liste.php` unter «aussortiert»
+samt Begründung angezeigt. Ein Fehlgriff bleibt damit sichtbar und
+nachholbar. Die Antwort an die Absenderin ist dieselbe wie bei Erfolg —
+ein Bot soll nicht lernen, welches Merkmal ihn verraten hat.
+
+Die DNS-Abfrage lässt sich mit `'spam_dns' => false` in der `config.php`
+abschalten, etwa wo kein DNS erreichbar ist. Schlägt schon die
+Kontrollabfrage auf `birkenhain.ch` fehl, zählt das Merkmal von selbst
+nicht mit.
