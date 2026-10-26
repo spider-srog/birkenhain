@@ -79,10 +79,14 @@ try {
         bh_respond($locale, 'error', 502, ['error' => 'mail-failed']);
     }
 } catch (BhConfigError $error) {
-    // Eigene Antwort, damit von aussen lesbar ist, dass die Konfiguration
-    // auf dem Server fehlt — und nicht das Formular defekt ist.
+    // Eigene Antwort, damit von aussen lesbar ist, dass es am Server liegt
+    // und nicht am Formular. Der Hinweis benennt die Stelle, nie den
+    // Inhalt — Pfade und Secrets bleiben drin.
     bh_log('Konfiguration unbrauchbar: ' . $error->getMessage());
-    bh_respond($locale, 'error', 500, ['error' => 'config']);
+    bh_respond($locale, 'error', 500, array_filter([
+        'error' => 'config',
+        'hinweis' => $error->hinweis,
+    ]));
 } catch (Throwable $error) {
     bh_log('Anmeldung fehlgeschlagen: ' . $error->getMessage());
     bh_respond($locale, 'error', 500, ['error' => 'server-error']);
