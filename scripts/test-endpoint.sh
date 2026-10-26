@@ -14,9 +14,19 @@ DATA="$TMP/birkenhain-data"
 FAILED=0
 
 cleanup() {
-  [ -n "${SRV:-}" ] && kill "$SRV" 2>/dev/null || true
-  [ -n "${SRV2:-}" ] && kill "$SRV2" 2>/dev/null || true
+  for pid in ${SRV:-} ${SRV2:-} ${SRV3:-}; do
+    kill "$pid" 2>/dev/null || true
+  done
   rm -rf "$TMP"
+}
+
+# Ein weiterer Server auf eigenem Port mit eigenem Datenverzeichnis.
+start_server() {
+  BIRKENHAIN_DATA_DIR="$2" php -S "127.0.0.1:$1" -t "$ROOT" >"$TMP/server-$1.log" 2>&1 &
+  for _ in $(seq 1 40); do
+    curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$1/api/anmeldung.php" && break
+    sleep 0.2
+  done
 }
 trap cleanup EXIT
 
@@ -160,27 +170,64 @@ for n in $(seq 1 9); do
 done
 check "Rate-Limit greift pro IP" "$last" "429"
 
-# Fehlt `birkenhain-data/config.php`, muss die Ursache von aussen lesbar sein
-# und die Besucherin trotzdem auf der Fehlerseite landen — genau das ging am
-# 26.10.2026 live schief, dort mit leerer 500 ohne Hinweis.
+# Ohne vollstaendige `config.php` laeuft der Endpoint mit den Vorgaben aus
+# dem Code weiter und legt sich seinen Opt-In-Schluessel selbst an. Genau
+# daran stand das Formular am 26.10.2026 live still. Die Teilkonfiguration
+# setzt nur den Mailweg, damit der Test nichts verschickt.
 PORT2=$((PORT + 1))
-mkdir -p "$TMP/leer"
-BIRKENHAIN_DATA_DIR="$TMP/leer" php -S "127.0.0.1:$PORT2" -t "$ROOT" >"$TMP/server2.log" 2>&1 &
+DATA2="$TMP/teilkonfiguriert"
+mkdir -p "$DATA2"
+printf '%s\n' '<?php' "return ['mail_transport' => 'log'];" > "$DATA2/config.php"
+start_server "$PORT2" "$DATA2"
 SRV2=$!
-for _ in $(seq 1 40); do
-  curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$PORT2/api/anmeldung.php" && break
-  sleep 0.2
-done
 
-check "ohne config.php: Ursache benannt" \
+check "Teilkonfiguration genügt" \
   "$(curl -s --noproxy '*' -H 'Accept: application/json' -d firstName=A -d lastName=B \
       -d email=a@example.test -d consent=on -d locale=de \
       "http://127.0.0.1:$PORT2/api/anmeldung.php")" \
-  '{"error":"config"}'
-check "ohne config.php: Fehlerseite statt leerer 500" \
+  '{"ok":true}'
+check "Opt-In-Schlüssel wurde angelegt" \
+  "$([ -s "$DATA2/opt-in-secret" ] && echo ja || echo nein)" "ja"
+check "Schlüssel ist lang genug" \
+  "$([ "$(wc -c < "$DATA2/opt-in-secret")" -ge 32 ] && echo ja || echo nein)" "ja"
+check "Schlüssel nur für den eigenen Benutzer" \
+  "$(stat -c '%a' "$DATA2/opt-in-secret")" "600"
+
+# Und der erzeugte Schlüssel traegt auch die Bestaetigung: der Link aus der
+# Mail muss mit derselben Signatur wieder aufgehen.
+LINK2=$(grep -o "http://127.0.0.1:$PORT2/api/bestaetigen.php?[^ ]*" "$DATA2/mail.log" | tail -1)
+check "Bestätigung mit erzeugtem Schlüssel" "$(target "$LINK2")" \
+  "http://127.0.0.1:$PORT2/anmeldung/bestaetigt"
+check "Anmeldung steht in der Liste" \
+  "$(tail -n +2 "$DATA2/anmeldungen.csv" | wc -l | tr -d ' ')" "1"
+
+# Ganz ohne Datei ebenfalls — nur der Mailweg ist dann der echte, darum
+# bleibt es hier bei der Frage, ob die Konfiguration noch im Weg steht.
+DATA3="$TMP/ohne-config"
+mkdir -p "$DATA3"
+PORT3=$((PORT + 2))
+start_server "$PORT3" "$DATA3"
+SRV3=$!
+
+check "ohne config.php keine Konfigurationsklage" \
+  "$(curl -s --noproxy '*' -H 'Accept: application/json' -d firstName=A -d lastName=B \
+      -d email=a@example.test -d consent=on -d locale=de \
+      "http://127.0.0.1:$PORT3/api/anmeldung.php" | grep -c '"error":"config"' || true)" \
+  "0"
+
+# Eine vorhandene, aber unbrauchbare Datei bleibt ein Fehler: hier hat
+# jemand etwas gewollt, und es ist schiefgegangen. Der Hinweis benennt die
+# Stelle, damit das von aussen lesbar ist.
+printf '%s\n' '<?php' "return 'kein Array';" > "$DATA3/config.php"
+check "kaputte config.php wird benannt" \
+  "$(curl -s --noproxy '*' -H 'Accept: application/json' -d firstName=A -d lastName=B \
+      -d email=a@example.test -d consent=on -d locale=de \
+      "http://127.0.0.1:$PORT3/api/anmeldung.php")" \
+  '{"error":"config","hinweis":"config-kaputt"}'
+check "kaputte config.php: Fehlerseite statt leerer 500" \
   "$(target -d firstName=A -d lastName=B -d email=a@example.test -d consent=on -d locale=de \
-      "http://127.0.0.1:$PORT2/api/anmeldung.php")" \
-  "http://127.0.0.1:$PORT2/anmeldung/fehler"
+      "http://127.0.0.1:$PORT3/api/anmeldung.php")" \
+  "http://127.0.0.1:$PORT3/anmeldung/fehler"
 
 echo
 if [ "$FAILED" -eq 0 ]; then

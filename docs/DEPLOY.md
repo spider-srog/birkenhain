@@ -63,37 +63,51 @@ npm run build        # nach dist/
 `dist/` enthält danach alles: HTML, Assets, `.htaccess`, `404.html`,
 `robots.txt`, `sitemap.xml` und `api/`.
 
-## 3. Datenverzeichnis anlegen
+## 3. Datenverzeichnis
 
 **Eine Ebene über dem Webroot** — dort kommt kein Browser hin:
 
 ```
 /home/<user>/
 ├── birkenhain-data/          <- hierhin
-│   ├── config.php
+│   ├── config.php            (optional, siehe unten)
+│   ├── opt-in-secret         (erzeugt der Endpoint selbst, 0600)
 │   ├── anmeldungen.sqlite    (wird beim ersten Request angelegt)
 │   ├── anmeldungen.csv       (Liste, wird bei der ersten Bestätigung angelegt)
 │   └── mail.log              (nur bei mail_transport = log)
 └── www/                      <- Webroot, hier landet dist/
 ```
 
-`docs/config.sample.php` nach `birkenhain-data/config.php` kopieren und
-ausfüllen. Das Secret erzeugen mit:
+**Das Verzeichnis legt der Endpoint selbst an, und eine `config.php`
+braucht er nicht.** Fehlt sie, gelten die Vorgaben aus
+`public/api/lib/birkenhain.php` (`CONFIG_DEFAULTS`) — dieselben Werte wie
+in `docs/config.sample.php`: Absender `noreply@birkenhain.ch`, interne
+Meldung an `birkenhain@realnorth.ch`, Mailweg des Hosters. Den Schlüssel
+für die Bestätigungslinks erzeugt er beim ersten Bedarf und legt ihn als
+`opt-in-secret` daneben, nur für den eigenen Benutzer lesbar.
+
+Das war bis zum 26.10.2026 anders: ohne `config.php` verweigerte der
+Endpoint den Dienst — in der Absicht, eine fehlende Konfiguration nicht
+stillschweigend durchlaufen zu lassen. Live hiess das, dass das Formular
+keine einzige Anmeldung annahm und von aussen nicht zu sehen war, warum.
+
+**Eine `config.php` ist trotzdem sinnvoll**, denn sie sticht die Vorgaben
+Feld für Feld. `docs/config.sample.php` nach `birkenhain-data/config.php`
+kopieren und nur eintragen, was abweichen soll. Ein eigenes Secret erzeugt:
 
 ```bash
 openssl rand -base64 48
 ```
 
-Der Endpoint verweigert den Dienst, wenn `opt_in_secret` fehlt oder kürzer
-als 32 Zeichen ist — bewusst, damit eine fehlende Konfiguration nicht als
-stiller Fehler durchläuft.
+Eine vorhandene, aber unbrauchbare `config.php` bleibt ein Fehler: sie
+muss ein Array zurückgeben. Sonst antwortet der Endpoint mit
+`{"error":"config","hinweis":"config-kaputt"}` und leitet ohne
+JSON-Header auf `/anmeldung/fehler`. Weitere Hinweise:
+`datenverzeichnis` (nicht anlegbar), `schluessel` (nicht schreibbar),
+`absender` (`mail_from` leer gesetzt). Im Fehlerprotokoll von PHP steht
+dann `[birkenhain] Konfiguration unbrauchbar: …`.
 
-**Ohne diese Datei nimmt das Formular keine Anmeldung an.** Es antwortet
-dann mit `{"error":"config"}` (bzw. leitet auf `/anmeldung/fehler`), und
-im Fehlerprotokoll von PHP steht `[birkenhain] Konfiguration unbrauchbar:
-…`. Gespeichert wird in dem Fall nichts — es geht also nichts verloren,
-aber es kommt auch nichts an. Genau das war der Zustand am 26.10.2026.
-Prüfen lässt sich das von aussen:
+Von aussen prüfen lässt sich das so:
 
 ```bash
 curl -sS -H 'Accept: application/json' -d firstName=A -d lastName=B \
