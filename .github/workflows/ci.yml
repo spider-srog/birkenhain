@@ -92,7 +92,7 @@ jobs:
           test -f dist/en/404/index.html
           test -f dist/.htaccess
           test -f dist/api/anmeldung.php
-          test -f dist/api/bestaetigen.php
+          test -f dist/api/liste.php
           # Die @font-face-Regel liegt in public/ und muss mitkommen.
           test -f dist/fonts/readex-pro.css
           # Die Schriftdatei selbst entscheidet, ob das Artefakt direkt
