@@ -1,5 +1,6 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import Etappierung from '../Etappierung.astro';
 import Fakten from '../Fakten.astro';
 import Galerie from '../Galerie.astro';
 import Hero from '../Hero.astro';
@@ -53,6 +54,9 @@ const teasers = [
     cta2Label={t('home.heroCta2')}
   />
 
+  <Etappierung locale={locale} />
+  <Planung locale={locale} />
+
   <Fakten locale={locale} />
 
   <section class="intro section" aria-labelledby="intro-heading">
@@ -92,7 +96,6 @@ const teasers = [
 
   <Teaser items={teasers} />
   <Services locale={locale} />
-  <Planung locale={locale} />
   <Galerie locale={locale} />
 </BaseLayout>
 

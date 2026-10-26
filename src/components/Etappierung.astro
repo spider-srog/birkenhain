@@ -1,0 +1,92 @@
+---
+import { useTranslations } from '../i18n/ui';
+import type { Locale } from '../i18n/routes';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const t = useTranslations(locale);
+
+const steps = [t('home.etappen1'), t('home.etappen2'), t('home.etappen3')];
+---
+
+<section class="etappen section--alt section--m" aria-labelledby="etappen-heading">
+  <div class="container">
+    <div data-reveal>
+      <p class="kicker">{t('home.etappenKicker')}</p>
+      <h2 class="etappen__title" id="etappen-heading">{t('home.etappenTitle')}</h2>
+    </div>
+
+    <ol class="etappen__steps" data-reveal data-stagger>
+      {
+        steps.map((text, i) => (
+          <li class="etappen__step">
+            {/* Die Ziffer ist Schmuck: die Reihenfolge traegt schon das <ol>,
+                deshalb aria-hidden statt doppelter Ansage. */}
+            <span class="etappen__num" aria-hidden="true">{String(i + 1).padStart(2, '0')}</span>
+            <p class="etappen__text">{text}</p>
+          </li>
+        ))
+      }
+    </ol>
+  </div>
+</section>
+
+<style>
+  /* Die grosse Zeile der Seite: eine Stufe ueber den uebrigen h2, damit sie
+     direkt unter dem Hero traegt. */
+  .etappen__title {
+    max-width: 20ch;
+    margin: 0;
+    font-size: clamp(2.125rem, 5.2vw, 4.25rem);
+    line-height: 1.04;
+  }
+
+  .etappen__steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: var(--border-width);
+    margin: clamp(2rem, 4.5vw, 3.5rem) 0 0;
+    padding: 0;
+    list-style: none;
+    background: var(--c-hairline);
+    border-block: var(--hairline);
+  }
+
+  .etappen__step {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-m);
+    padding: var(--space-m) 0;
+    background: var(--c-bg-alt);
+  }
+
+  /* Ab zwei Spalten braucht jede Zelle links Luft zur Trennlinie; in einer
+     Spalte liefe sie sonst eingerueckt gegen den Containerrand. */
+  @media (min-width: 34rem) {
+    .etappen__step + .etappen__step {
+      padding-left: var(--space-m);
+    }
+  }
+
+  .etappen__num {
+    flex: none;
+    font-size: var(--fs-figure);
+    font-weight: var(--fw-extralight);
+    line-height: 1;
+    letter-spacing: var(--ls-heading);
+    font-variant-numeric: tabular-nums;
+    color: var(--c-accent);
+  }
+
+  .etappen__text {
+    max-width: 30ch;
+    margin: 0;
+    font-size: var(--fs-body);
+    font-weight: var(--fw-light);
+    line-height: var(--lh-body);
+    color: #54514d;
+  }
+</style>
