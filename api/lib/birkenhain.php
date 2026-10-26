@@ -43,6 +43,19 @@ const LIMITS = [
  */
 const MOVE_IN = ['asap', 'flexibel', '2030', '2032'];
 
+/**
+ * Einstellplatz: keine Angabe, ohne oder mit Ladestation. Wie beim
+ * Bezugstermin sprachneutral abgelegt.
+ */
+const PARKING = ['ohne', 'mit'];
+
+/**
+ * Mehrfachauswahl «Weitere Wünsche». Reihenfolge ist die Reihenfolge im
+ * Formular — die Ablage sortiert danach, damit zwei gleiche Wünsche auch
+ * gleich dastehen.
+ */
+const EXTRAS = ['garten', 'attika', 'bastelraum', 'haustier'];
+
 /** Zielseiten. Echte Routen, damit es ohne JavaScript funktioniert. */
 const PATHS = [
     'de' => [
@@ -60,6 +73,18 @@ const PATHS = [
         'rateLimit' => '/en/register/too-many-attempts',
     ],
 ];
+
+/**
+ * Eigener Typ für «die Konfiguration fehlt oder taugt nicht». Am 26.10.2026
+ * stand das Formular live auf 500, und die Antwort sagte nur
+ * `server-error` — dieselbe Auskunft wie bei einem Datenbank- oder
+ * Mailfehler. Erst eine Probe über den Redirect-Pfad, der ohne
+ * Konfiguration gar nicht erst antworten kann, zeigte die Ursache. Mit
+ * diesem Typ sagt es die Antwort selbst: `{"error":"config"}`.
+ */
+class BhConfigError extends RuntimeException
+{
+}
 
 /**
  * Konfiguration. Liegt bewusst ausserhalb des Webroots — die Secrets
@@ -81,12 +106,12 @@ function bh_config(): array
 
     $file = rtrim($dir, '/') . '/config.php';
     if (!is_file($file)) {
-        throw new RuntimeException("Konfiguration fehlt: {$file}");
+        throw new BhConfigError("Konfiguration fehlt: {$file}");
     }
 
     $loaded = require $file;
     if (!is_array($loaded)) {
-        throw new RuntimeException('config.php muss ein Array zurückgeben.');
+        throw new BhConfigError('config.php muss ein Array zurückgeben.');
     }
 
     $loaded['data_dir'] = rtrim($dir, '/');
@@ -98,7 +123,7 @@ function bh_secret(): string
 {
     $secret = bh_config()['opt_in_secret'] ?? '';
     if (!is_string($secret) || strlen($secret) < 32) {
-        throw new RuntimeException('opt_in_secret fehlt oder ist kürzer als 32 Zeichen.');
+        throw new BhConfigError('opt_in_secret fehlt oder ist kürzer als 32 Zeichen.');
     }
     return $secret;
 }
@@ -190,6 +215,8 @@ function bh_validate(array $post): array
         'rooms' => bh_field($post, 'rooms', 8),
         'area' => bh_field($post, 'area', 8),
         'moveIn' => bh_field($post, 'moveIn', 16),
+        'parking' => bh_field($post, 'parking', 8),
+        'extras' => bh_extras($post),
         'message' => bh_field($post, 'message', LIMITS['message']),
         'consent' => isset($post['consent']),
         'locale' => ($post['locale'] ?? '') === 'en' ? 'en' : 'de',
@@ -229,8 +256,43 @@ function bh_validate(array $post): array
     ) {
         $value['moveIn'] = '';
     }
+    if ($value['parking'] !== '' && !in_array($value['parking'], PARKING, true)) {
+        $value['parking'] = '';
+    }
 
     return ['ok' => $fields === [], 'fields' => $fields, 'value' => $value];
+}
+
+/**
+ * Mehrfachauswahl «Weitere Wünsche». Als Komma-Liste abgelegt statt als
+ * Array: Benachrichtigungsmail, CSV und die bestehende Ablage sind alle
+ * flach, und ein Array mittendrin müsste an drei Stellen gesondert
+ * behandelt werden. Unbekannte Werte fallen weg, die Reihenfolge ist die
+ * des Formulars.
+ */
+function bh_extras(array $post): string
+{
+    $raw = $post['extras'] ?? [];
+    if (is_string($raw)) {
+        $raw = [$raw];
+    }
+    if (!is_array($raw)) {
+        return '';
+    }
+
+    $chosen = [];
+    foreach (EXTRAS as $key) {
+        if (in_array($key, $raw, true)) {
+            $chosen[] = $key;
+        }
+    }
+    return implode(',', $chosen);
+}
+
+/** Ein Wunsch aus der Komma-Liste — für CSV und Mail. */
+function bh_has_extra(string $extras, string $key): bool
+{
+    return in_array($key, explode(',', $extras), true);
 }
 
 /** Honeypot: das Feld ist für Menschen unsichtbar und muss leer bleiben. */
@@ -302,7 +364,7 @@ function bh_mail(string $to, string $subject, string $body): bool
 {
     $from = bh_config()['mail_from'] ?? '';
     if ($from === '') {
-        throw new RuntimeException('mail_from fehlt in der Konfiguration.');
+        throw new BhConfigError('mail_from fehlt in der Konfiguration.');
     }
 
     $headers = implode("\r\n", [
@@ -374,6 +436,90 @@ function bh_opt_in_mail(string $locale, string $name, string $link): array
     ];
 }
 
+// --- Liste ----------------------------------------------------------------
+
+/** Spalten der Liste, in dieser Reihenfolge. */
+const LIST_COLUMNS = [
+    'Bestätigt am',
+    'Vorname',
+    'Name',
+    'E-Mail',
+    'Telefon',
+    'Zimmer',
+    'Fläche ab (m²)',
+    'Bezugstermin',
+    'Einstellplatz',
+    'Gartenwohnung',
+    'Attikawohnung',
+    'Bastelraum',
+    'Haustier',
+    'Sprache',
+    'Bemerkung',
+];
+
+/**
+ * Führt `birkenhain-data/anmeldungen.csv` — eine Zeile je bestätigter
+ * Anmeldung, zum Anklicken im Dateimanager.
+ *
+ * Die Datenbank bleibt die verbindliche Ablage; diese Datei ist die
+ * lesbare Sicht darauf. Sie wird nur ergänzt, nie überschrieben: geht die
+ * SQLite-Datei einmal verloren, liegt die Liste trotzdem noch da.
+ *
+ * Semikolon statt Komma und ein BOM voran, damit Excel die Datei in der
+ * Schweizer Einstellung ohne Importdialog richtig aufteilt und Umlaute
+ * nicht zerlegt.
+ *
+ * Schlägt das Schreiben fehl, ist das kein Grund, die Bestätigung
+ * scheitern zu lassen — die Anmeldung steht dann in der Datenbank.
+ */
+function bh_append_list(array $record): bool
+{
+    $file = bh_config()['data_dir'] . '/anmeldungen.csv';
+    $neu = !is_file($file);
+
+    $handle = @fopen($file, 'a');
+    if ($handle === false) {
+        return false;
+    }
+
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            return false;
+        }
+
+        // Zwischen is_file() und dem Lock kann ein paralleler Request die
+        // Datei angelegt haben; die Grösse entscheidet, nicht die Vorprüfung.
+        if ($neu && ftell($handle) === 0) {
+            fwrite($handle, "\u{FEFF}");
+            fputcsv($handle, LIST_COLUMNS, ';', '"', '\\');
+        }
+
+        $extras = (string) ($record['extras'] ?? '');
+        fputcsv($handle, [
+            $record['confirmedAt'] ?? gmdate('c'),
+            $record['firstName'] ?? '',
+            $record['lastName'] ?? '',
+            $record['email'] ?? '',
+            $record['phone'] ?? '',
+            $record['rooms'] ?? '',
+            $record['area'] ?? '',
+            $record['moveIn'] ?? '',
+            $record['parking'] ?? '',
+            bh_has_extra($extras, 'garten') ? 'ja' : '',
+            bh_has_extra($extras, 'attika') ? 'ja' : '',
+            bh_has_extra($extras, 'bastelraum') ? 'ja' : '',
+            bh_has_extra($extras, 'haustier') ? 'ja' : '',
+            $record['locale'] ?? '',
+            str_replace(["\r\n", "\r", "\n"], ' ', (string) ($record['message'] ?? '')),
+        ], ';', '"', '\\');
+
+        flock($handle, LOCK_UN);
+        return true;
+    } finally {
+        fclose($handle);
+    }
+}
+
 /** Interne Benachrichtigung, erst nach der Bestätigung. */
 function bh_notify_mail(array $record): array
 {
@@ -421,8 +567,12 @@ function bh_respond(string $locale, string $kind, int $status, array $payload): 
         exit;
     }
 
+    // Relativ, nicht absolut: RFC 7231 erlaubt das, und so haengt der
+    // Umweg zur Fehlerseite nicht mehr an der Konfiguration. Fehlt
+    // `config.php`, sieht die Besucherin dann die Fehlerseite statt einer
+    // leeren 500 — `bh_origin()` ruft `bh_config()` und wuerfe hier erneut.
     $path = PATHS[$locale][$kind] ?? PATHS['de'][$kind];
-    header('Location: ' . bh_origin() . $path, true, 303);
+    header('Location: ' . $path, true, 303);
     exit;
 }
 
