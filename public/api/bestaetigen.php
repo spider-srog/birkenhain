@@ -22,7 +22,7 @@ $signature = (string) ($_GET['sig'] ?? '');
 /** Abgelaufen, eingelöst oder gefälscht: derselbe Ausgang, keine Auskunft. */
 function bh_fail(string $locale = 'de'): never
 {
-    header('Location: ' . bh_origin() . PATHS[$locale]['confirmFailed'], true, 303);
+    header('Location: ' . PATHS[$locale]['confirmFailed'], true, 303);
     exit;
 }
 
@@ -47,17 +47,26 @@ try {
     $locale = ($record['locale'] ?? 'de') === 'en' ? 'en' : 'de';
     $emailHash = bh_hash_email((string) $record['email']);
 
+    $record += ['confirmedAt' => gmdate('c')];
+
     $db = bh_db();
     $db->beginTransaction();
     $db->prepare('INSERT OR REPLACE INTO signups (email_hash, payload, confirmed_at) VALUES (?, ?, ?)')
         ->execute([
             $emailHash,
-            json_encode($record + ['confirmedAt' => gmdate('c')], JSON_UNESCAPED_UNICODE),
+            json_encode($record, JSON_UNESCAPED_UNICODE),
             time(),
         ]);
     // Einmal-Link: nach dem Einlösen ist die offene Anmeldung weg.
     $db->prepare('DELETE FROM pending WHERE id = ?')->execute([$id]);
     $db->commit();
+
+    // Erst nach dem Commit: die Liste soll nur zeigen, was wirklich steht.
+    if (!bh_append_list($record)) {
+        // Die Anmeldung ist in der Datenbank — die lesbare Liste hinkt dann
+        // nach, mehr nicht. Kein Grund, die Bestätigung scheitern zu lassen.
+        bh_log('Liste nicht beschreibbar, Anmeldung nur in der Datenbank: ' . $emailHash);
+    }
 
     $notifyTo = bh_config()['mail_notify_to'] ?? '';
     if (is_string($notifyTo) && $notifyTo !== '') {
@@ -72,5 +81,5 @@ try {
     bh_fail();
 }
 
-header('Location: ' . bh_origin() . PATHS[$locale]['confirmed'], true, 303);
+header('Location: ' . PATHS[$locale]['confirmed'], true, 303);
 exit;
